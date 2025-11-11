@@ -27,7 +27,7 @@ SESSIONS = {}
 CORS(
     app,
     supports_credentials=False,  # Changed to False since we're using token-based auth
-    resources={r"/api/*": {"origins": [FRONTEND_URL, "http://localhost:5173"]}},
+    resources={r"/api/*": {"origins": [FRONTEND_URL, "https://viewer-x964.vercel.app/"]}},
     allow_headers=["Content-Type", "X-Session-Token"],
 )
 
