@@ -3,6 +3,7 @@ import os
 import uuid
 import json
 import atexit
+from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import pandas as pd
@@ -13,16 +14,20 @@ app = Flask(__name__)
 # ==========================
 # CONFIG
 # ==========================
-UPLOAD_FOLDER = "uploads"
-SESSIONS_FILE = "sessions.json"
+UPLOAD_FOLDER = os.environ.get("UPLOAD_FOLDER", "uploads")
+SESSIONS_FILE = os.environ.get("SESSIONS_FILE", "sessions.json")
+SESSION_EXPIRY_HOURS = int(os.environ.get("SESSION_EXPIRY_HOURS", "24"))
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
+
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 SESSIONS = {}
 
+# CORS configuration for production
 CORS(
     app,
-    supports_credentials=True,
-    resources={r"/api/*": {"origins": "http://localhost:5173"}},
+    supports_credentials=False,  # Changed to False since we're using token-based auth
+    resources={r"/api/*": {"origins": [FRONTEND_URL, "http://localhost:5173"]}},
     allow_headers=["Content-Type", "X-Session-Token"],
 )
 
@@ -30,16 +35,20 @@ CORS(
 # Persistence helpers
 # ==========================
 def load_sessions():
+    """Load sessions from disk and clean expired ones"""
     global SESSIONS
     if os.path.exists(SESSIONS_FILE):
         try:
             with open(SESSIONS_FILE, "r", encoding="utf-8") as f:
                 SESSIONS = json.load(f)
                 print(f"[SESSIONS] Loaded {len(SESSIONS)} sessions from {SESSIONS_FILE}")
+                clean_expired_sessions()
         except Exception as e:
             print(f"[SESSIONS] Failed to load sessions: {e}")
+            SESSIONS = {}
 
 def save_sessions():
+    """Save sessions to disk"""
     try:
         with open(SESSIONS_FILE, "w", encoding="utf-8") as f:
             json.dump(SESSIONS, f)
@@ -47,27 +56,107 @@ def save_sessions():
     except Exception as e:
         print(f"[SESSIONS] Failed to save sessions: {e}")
 
+def clean_expired_sessions():
+    """Remove expired sessions and their associated files"""
+    global SESSIONS
+    now = datetime.now()
+    expired_tokens = []
+    
+    for token, session_data in list(SESSIONS.items()):
+        if isinstance(session_data, str):
+            # Old format - migrate or remove
+            csv_path = session_data
+            if not os.path.exists(csv_path):
+                expired_tokens.append(token)
+            continue
+        
+        expires_at = datetime.fromisoformat(session_data.get("expires_at", "2000-01-01"))
+        if now > expires_at:
+            expired_tokens.append(token)
+            csv_path = session_data.get("csv_path")
+            if csv_path and os.path.exists(csv_path):
+                try:
+                    os.remove(csv_path)
+                    print(f"[CLEANUP] Removed expired file: {csv_path}")
+                except Exception as e:
+                    print(f"[CLEANUP] Failed to remove {csv_path}: {e}")
+    
+    for token in expired_tokens:
+        del SESSIONS[token]
+    
+    if expired_tokens:
+        print(f"[CLEANUP] Removed {len(expired_tokens)} expired sessions")
+        save_sessions()
+
 atexit.register(save_sessions)
 load_sessions()
 
 # ==========================
 # Helpers
 # ==========================
-def get_csv_path_from_request():
+def get_session_from_request():
+    """Extract and validate session token from request"""
     token = request.headers.get("X-Session-Token") or request.args.get("token")
     if not token:
         print("[DEBUG] Missing token in request")
         return None, None
-    csv_path = SESSIONS.get(token)
-    if not csv_path:
+    
+    session_data = SESSIONS.get(token)
+    if not session_data:
         print(f"[DEBUG] Token {token} not found in sessions")
+        return None, None
+    
+    # Handle old format (string) - migrate to new format
+    if isinstance(session_data, str):
+        csv_path = session_data
+        expires_at = datetime.now() + timedelta(hours=SESSION_EXPIRY_HOURS)
+        session_data = {
+            "csv_path": csv_path,
+            "created_at": datetime.now().isoformat(),
+            "expires_at": expires_at.isoformat(),
+            "last_accessed": datetime.now().isoformat()
+        }
+        SESSIONS[token] = session_data
+        save_sessions()
+    else:
+        # Check if session is expired
+        expires_at = datetime.fromisoformat(session_data.get("expires_at", "2000-01-01"))
+        if datetime.now() > expires_at:
+            print(f"[DEBUG] Token {token} has expired")
+            csv_path = session_data.get("csv_path")
+            if csv_path and os.path.exists(csv_path):
+                try:
+                    os.remove(csv_path)
+                except Exception as e:
+                    print(f"[CLEANUP] Failed to remove {csv_path}: {e}")
+            del SESSIONS[token]
+            save_sessions()
+            return None, None
+        
+        # Update last accessed time
+        session_data["last_accessed"] = datetime.now().isoformat()
+        save_sessions()
+    
+    csv_path = session_data.get("csv_path")
+    if not csv_path or not os.path.exists(csv_path):
+        print(f"[DEBUG] CSV file not found for token {token}")
+        del SESSIONS[token]
+        save_sessions()
+        return None, None
+    
     return token, csv_path
 
 # ==========================
 # Routes
 # ==========================
+@app.route("/api/health", methods=["GET"])
+def health_check():
+    """Health check endpoint for AWS load balancer"""
+    return jsonify({"status": "healthy", "timestamp": datetime.now().isoformat()}), 200
+
 @app.route("/api/upload", methods=["POST"])
 def upload_csv():
+    """Handle CSV file upload and create new session"""
     if "csv_file" not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
     
@@ -115,9 +204,27 @@ def upload_csv():
     reviewed_path = f"{base}_reviewed.csv"
     df.to_csv(reviewed_path, index=False)
     
+    # Remove temporary upload file
+    try:
+        os.remove(upload_path)
+    except Exception as e:
+        print(f"[UPLOAD] Failed to remove temp file: {e}")
+    
+    # Create new session with expiry
     token = uuid.uuid4().hex
-    SESSIONS[token] = reviewed_path
+    expires_at = datetime.now() + timedelta(hours=SESSION_EXPIRY_HOURS)
+    
+    SESSIONS[token] = {
+        "csv_path": reviewed_path,
+        "created_at": datetime.now().isoformat(),
+        "expires_at": expires_at.isoformat(),
+        "last_accessed": datetime.now().isoformat(),
+        "original_filename": filename
+    }
     save_sessions()
+    
+    # Clean up old sessions periodically
+    clean_expired_sessions()
     
     print(f"[UPLOAD] token={token} -> {reviewed_path} ({len(df)} rows, {duplicates_removed} duplicates removed)")
     
@@ -125,20 +232,37 @@ def upload_csv():
         "message": "CSV uploaded successfully",
         "total": len(df),
         "duplicates_removed": duplicates_removed,
-        "token": token
+        "token": token,
+        "expires_in_hours": SESSION_EXPIRY_HOURS
     }), 200
+
+@app.route("/api/session-check", methods=["GET"])
+def session_check():
+    """Check if session token is valid"""
+    token, csv_path = get_session_from_request()
+    active = bool(token and csv_path and os.path.exists(csv_path))
+    
+    if active:
+        session_data = SESSIONS.get(token, {})
+        return jsonify({
+            "hasSession": True,
+            "expires_at": session_data.get("expires_at")
+        }), 200
+    else:
+        return jsonify({"hasSession": False}), 200
 
 @app.route("/api/data", methods=["GET"])
 def get_data():
-    token, csv_path = get_csv_path_from_request()
+    """Get all data for the current session"""
+    token, csv_path = get_session_from_request()
     print(f"[DATA] token={token}, csv_path={csv_path}")
     
     if not token or not csv_path:
-        return jsonify({"error": "No CSV uploaded or invalid token"}), 400
+        return jsonify({"error": "No CSV uploaded or invalid/expired token"}), 401
     
     if not os.path.exists(csv_path):
         print(f"[DATA] file not found at {csv_path}")
-        return jsonify({"error": "CSV file not found on server"}), 400
+        return jsonify({"error": "CSV file not found on server"}), 404
     
     try:
         df = pd.read_csv(csv_path)
@@ -154,11 +278,12 @@ def get_data():
 
 @app.route("/api/update-status", methods=["POST"])
 def update_status():
-    token, csv_path = get_csv_path_from_request()
+    """Update status and feedback for a specific item"""
+    token, csv_path = get_session_from_request()
     print(f"[UPDATE] token={token}, csv_path={csv_path}")
     
     if not token or not csv_path or not os.path.exists(csv_path):
-        return jsonify({"error": "No CSV uploaded or invalid token"}), 400
+        return jsonify({"error": "No CSV uploaded or invalid/expired token"}), 401
     
     body = request.get_json(silent=True) or {}
     index = body.get("index")
@@ -187,12 +312,12 @@ def update_status():
 
 @app.route("/api/download", methods=["GET"])
 def download_csv():
-    token, csv_path = get_csv_path_from_request()
+    """Download the reviewed CSV file"""
+    token, csv_path = get_session_from_request()
     
     if not token or not csv_path or not os.path.exists(csv_path):
-        return jsonify({"error": "No reviewed CSV available or invalid token"}), 400
+        return jsonify({"error": "No reviewed CSV available or invalid/expired token"}), 401
     
-    # Read the CSV and ensure no duplicates before sending
     try:
         df = pd.read_csv(csv_path)
         # Remove any duplicates that might have been added during review
@@ -202,7 +327,12 @@ def download_csv():
         temp_path = csv_path.replace(".csv", "_download.csv")
         df.to_csv(temp_path, index=False)
         
-        response = send_file(temp_path, as_attachment=True, download_name="reviewed_results.csv")
+        # Get original filename from session
+        session_data = SESSIONS.get(token, {})
+        original_name = session_data.get("original_filename", "reviewed_results.csv")
+        download_name = f"reviewed_{original_name}"
+        
+        response = send_file(temp_path, as_attachment=True, download_name=download_name)
         
         # Clean up temp file after sending
         @response.call_on_close
@@ -218,13 +348,8 @@ def download_csv():
         print(f"[DOWNLOAD] Error: {e}")
         return jsonify({"error": f"Download failed: {e}"}), 500
 
-@app.route("/api/session-check", methods=["GET"])
-def session_check():
-    token, csv_path = get_csv_path_from_request()
-    active = bool(token and csv_path and os.path.exists(csv_path))
-    print(f"[SESSION-CHECK] token={token}, active={active}")
-    return jsonify({"hasSession": active}), 200
-
 if __name__ == "__main__":
-    print("[START] Flask server starting on :5000")
-    app.run(debug=True, port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    debug = os.environ.get("FLASK_ENV", "production") != "production"
+    print(f"[START] Flask server starting on :{port}")
+    app.run(host="0.0.0.0", debug=debug, port=port)
