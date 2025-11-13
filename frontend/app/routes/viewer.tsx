@@ -3,11 +3,13 @@ import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 
 interface DataItem {
-  // backend now normalizes to "link" but accept either just in case
+  // backend normalizes to these names but accept variants
   link?: string;
   Link?: string;
   Status?: string;
   Feedback?: string;
+  "Verified By"?: string;
+  verified_by?: string;
   [key: string]: any;
 }
 
@@ -22,6 +24,9 @@ export default function Viewer() {
   const [page, setPage] = useState<number>(0);
   const [sessionChecking, setSessionChecking] = useState<boolean>(true);
   const [token, setToken] = useState<string | null>(null);
+  const [verifierFilter, setVerifierFilter] = useState<string>(""); // input value
+  const [activeVerifier, setActiveVerifier] = useState<string | null>(null); // applied filter
+  const [pendingOnly, setPendingOnly] = useState<boolean>(false); // new: only show pending rows for that verifier
   const itemsPerPage = 5;
   const navigate = useNavigate();
 
@@ -30,6 +35,7 @@ export default function Viewer() {
       const t = window.localStorage.getItem("review_token");
       setToken(t);
     }
+    // initial session check and fetch
     checkSession();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -73,7 +79,9 @@ export default function Viewer() {
         console.log("Session is valid, fetching data...");
         setNoSession(false);
         setToken(currentToken);
-        await fetchData();
+        // fetch all data initially
+        const items = await fetchData();
+        setData(items);
       } else {
         console.warn("Session is invalid or expired");
         window.localStorage.removeItem("review_token");
@@ -91,7 +99,11 @@ export default function Viewer() {
     }
   };
 
-  const fetchData = async () => {
+  /**
+   * Fetch data from server, optionally requesting a verifier filter.
+   * Returns the normalized array (does NOT mutate component state).
+   */
+  const fetchData = async (verifierParam?: string | null): Promise<DataItem[]> => {
     try {
       const currentToken =
         token ?? (typeof window !== "undefined" ? window.localStorage.getItem("review_token") : null);
@@ -99,16 +111,22 @@ export default function Viewer() {
       if (!currentToken) {
         console.warn("No token found in localStorage");
         setNoSession(true);
-        setData([]);
-        return;
+        return [];
       }
 
-      const response = await fetch(`${API_URL}/api/data`, {
+      // build URL; include verifier query param if provided
+      const url = new URL(`${API_URL}/api/data`);
+      if (verifierParam) {
+        url.searchParams.set("verifier", verifierParam);
+      }
+
+      const response = await fetch(url.toString(), {
         credentials: "omit",
         headers: buildHeaders(currentToken),
       });
 
       if (response.status === 401) {
+        // Token expired or invalid
         console.warn("Token expired or invalid");
         if (typeof window !== "undefined") window.localStorage.removeItem("review_token");
         setToken(null);
@@ -116,7 +134,7 @@ export default function Viewer() {
         setData([]);
         setMessage("❌ Session expired. Please upload CSV again.");
         setTimeout(() => setMessage(""), 3000);
-        return;
+        return [];
       }
 
       let result: any = {};
@@ -129,28 +147,27 @@ export default function Viewer() {
 
       const items = Array.isArray(result.data) ? result.data : [];
 
-      // Normalize each item so it always has `link` lower-case
-      const normalized = items.map((it: any) => {
+      // Normalize each item so it always has `link` lower-case and Verified By visible
+      const normalized: DataItem[] = items.map((it: any) => {
         const link = it.link ?? it.Link ?? it.URL ?? "";
+        const verified = it["Verified By"] ?? it.verified_by ?? it.Verified ?? it["VerifiedBy"] ?? "";
+        const status = it.Status ?? it.status ?? "";
+        const feedback = it.Feedback ?? it.feedback ?? "";
         return {
           ...it,
           link,
+          "Verified By": verified,
+          Status: status,
+          Feedback: feedback,
         };
       });
 
-      if (response.ok && normalized.length > 0) {
-        setData(normalized);
-        setNoSession(false);
-      } else {
-        setData([]);
-        setNoSession(true);
-      }
+      return normalized;
     } catch (error) {
       console.error("Failed to fetch data:", error);
-      setData([]);
-      setNoSession(true);
       setMessage("❌ Failed to connect to server");
       setTimeout(() => setMessage(""), 3000);
+      return [];
     }
   };
 
@@ -192,14 +209,17 @@ export default function Viewer() {
 
         setData((prev) => {
           const copy = [...prev];
-          copy[absoluteIndex] = {
-            ...copy[absoluteIndex],
-            Status: status,
-            Feedback:
-              status === "Rejected"
-                ? providedFeedback || copy[absoluteIndex]?.Feedback
-                : copy[absoluteIndex]?.Feedback,
-          };
+          // update local copy if index exists in current view
+          if (absoluteIndex >= 0 && absoluteIndex < copy.length) {
+            copy[absoluteIndex] = {
+              ...copy[absoluteIndex],
+              Status: status,
+              Feedback:
+                status === "Rejected"
+                  ? providedFeedback || copy[absoluteIndex]?.Feedback
+                  : copy[absoluteIndex]?.Feedback,
+            };
+          }
           return copy;
         });
 
@@ -277,6 +297,70 @@ export default function Viewer() {
     }
   };
 
+  // apply verifier filter (call fetchData with param). Now supports pendingOnly.
+  const applyVerifierFilter = async () => {
+    if (!verifierFilter || verifierFilter.trim() === "") {
+      setMessage("Enter a name to filter by Verified By");
+      setTimeout(() => setMessage(""), 2000);
+      return;
+    }
+    setActiveVerifier(verifierFilter.trim());
+    // reset to first page
+    setPage(0);
+
+    const items = await fetchData(verifierFilter.trim());
+
+    // if pendingOnly, filter client-side to rows with empty/pending Status
+    const filtered = pendingOnly
+      ? items.filter((it) => {
+          const s = (it.Status ?? "").toString().trim().toLowerCase();
+          return s === "" || s === "pending";
+        })
+      : items;
+
+    setData(filtered);
+  };
+
+  const clearVerifierFilter = async () => {
+    setVerifierFilter("");
+    setActiveVerifier(null);
+    setPendingOnly(false);
+    setPage(0);
+    const items = await fetchData(null);
+    setData(items);
+  };
+
+  // toggle pendingOnly (when changed, re-apply the current filter)
+  const togglePendingOnly = async (checked: boolean) => {
+    setPendingOnly(checked);
+    // if a verifier is active, re-apply with the new pendingOnly setting
+    if (activeVerifier) {
+      setPage(0);
+      const items = await fetchData(activeVerifier);
+      const filtered = checked
+        ? items.filter((it) => {
+            const s = (it.Status ?? "").toString().trim().toLowerCase();
+            return s === "" || s === "pending";
+          })
+        : items;
+      setData(filtered);
+    } else {
+      // no active verifier: if pendingOnly selected we should filter all items to pending only
+      if (checked) {
+        // fetch all and show pending only
+        const items = await fetchData(null);
+        const filtered = items.filter((it) => {
+          const s = (it.Status ?? "").toString().trim().toLowerCase();
+          return s === "" || s === "pending";
+        });
+        setData(filtered);
+      } else {
+        const items = await fetchData(null);
+        setData(items);
+      }
+    }
+  };
+
   if (loading || sessionChecking) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center p-4">
@@ -334,40 +418,89 @@ export default function Viewer() {
   return (
     <div className="min-h-screen bg-black p-6">
       <div className="max-w-7xl mx-auto">
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between mb-4 gap-4">
           <h2 className="text-2xl font-semibold text-white">PDF Reviewer — Grid (5 per page)</h2>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={() => navigate("/")}
-              className="px-3 py-2 border border-gray-700 text-white rounded-lg text-sm hover:bg-gray-900 transition-colors"
-            >
-              ← Back
-            </button>
-            <button
-              type="button"
-              onClick={handleExport}
-              className="px-3 py-2 border border-gray-700 text-white rounded-lg text-sm hover:bg-gray-900 transition-colors"
-            >
-              📤 Export
-            </button>
+
+          <div className="flex flex-col sm:flex-row gap-2 items-stretch">
+            {/* Verifier filter UI */}
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={verifierFilter}
+                onChange={(e) => setVerifierFilter(e.target.value)}
+                placeholder="Filter by Verified By (e.g. Arun)"
+                className="px-3 py-2 rounded-lg bg-gray-900 text-white text-sm border border-gray-700 focus:outline-none"
+              />
+              <button
+                onClick={applyVerifierFilter}
+                className="px-3 py-2 bg-white text-black rounded-lg text-sm hover:bg-gray-200"
+              >
+                Apply
+              </button>
+              <button
+                onClick={clearVerifierFilter}
+                className="px-3 py-2 border border-gray-700 text-white rounded-lg text-sm hover:bg-gray-900"
+              >
+                Clear
+              </button>
+            </div>
+
+            {/* Pending-only toggle */}
+            <div className="flex items-center gap-2 ml-2">
+              <label className="flex items-center gap-2 text-sm text-gray-300">
+                <input
+                  type="checkbox"
+                  checked={pendingOnly}
+                  onChange={(e) => togglePendingOnly(e.target.checked)}
+                  className="w-4 h-4"
+                />
+                <span className="text-sm">Only pending</span>
+              </label>
+            </div>
+
+            <div className="flex gap-2 ml-0 md:ml-4">
+              <button
+                type="button"
+                onClick={() => navigate("/")}
+                className="px-3 py-2 border border-gray-700 text-white rounded-lg text-sm hover:bg-gray-900 transition-colors"
+              >
+                ← Back
+              </button>
+              <button
+                type="button"
+                onClick={handleExport}
+                className="px-3 py-2 border border-gray-700 text-white rounded-lg text-sm hover:bg-gray-900 transition-colors"
+              >
+                📤 Export
+              </button>
+            </div>
           </div>
         </div>
+
+        {activeVerifier && (
+          <div className="mb-4 text-sm text-gray-300">
+            Showing results for <span className="font-medium text-white">{activeVerifier}</span>
+            {pendingOnly && <span className="ml-2 text-yellow-300"> (only pending)</span>}
+            .{" "}
+            <button onClick={clearVerifierFilter} className="underline text-blue-300">Clear filter</button>
+          </div>
+        )}
 
         {message && <div className="text-sm text-green-400 p-2 bg-gray-900 rounded mb-4">{message}</div>}
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {pageItems.map((item, idx) => {
             const absoluteIndex = start + idx;
-            // Use the normalized link (we normalized in fetchData)
+            // Use the normalized link
             const pdfLink = item.link || item.Link || "";
             const viewerSrc = `https://docs.google.com/gview?url=${encodeURIComponent(pdfLink)}&embedded=true`;
+            const verifierName = item["Verified By"] ?? "";
 
             return (
               <div key={absoluteIndex} className="bg-black border border-gray-700 rounded-lg p-3">
                 <div className="text-sm text-gray-300 mb-2 flex items-center justify-between">
                   <div>#{absoluteIndex + 1}</div>
-                  <div className="text-xs">
+                  <div className="text-xs flex items-center gap-2">
                     <span
                       className={`px-2 py-1 rounded text-xs ${
                         item.Status === "Accepted"
@@ -391,7 +524,7 @@ export default function Viewer() {
                   />
                 </div>
 
-                <div className="mb-3">
+                <div className="mb-2 text-xs">
                   <a
                     href={pdfLink}
                     target="_blank"
@@ -404,6 +537,11 @@ export default function Viewer() {
                     Open original PDF (external)
                   </a>
                 </div>
+
+                {/* Show Verified By if present */}
+                {verifierName && (
+                  <div className="mb-2 text-xs text-gray-400">Verified By: <span className="text-white">{verifierName}</span></div>
+                )}
 
                 <div className="flex gap-2 mb-2">
                   <button
@@ -463,8 +601,11 @@ export default function Viewer() {
         </div>
 
         <div className="mt-4 text-gray-400 text-sm">
-          Total: {data.length} items | Accepted: {data.filter((d) => d.Status === "Accepted").length} | Rejected:{" "}
-          {data.filter((d) => d.Status === "Rejected").length} | Pending: {data.filter((d) => !d.Status).length}
+          Total: {data.length} items | Accepted: {data.filter((d) => (d.Status ?? "") === "Accepted").length} | Rejected:{" "}
+          {data.filter((d) => (d.Status ?? "") === "Rejected").length} | Pending: {data.filter((d) => {
+            const s = (d.Status ?? "").toString().trim().toLowerCase();
+            return s === "" || s === "pending";
+          }).length}
         </div>
       </div>
     </div>
