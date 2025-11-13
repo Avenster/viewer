@@ -1,8 +1,10 @@
-# server.py (replace/merge with your existing app)
+# server.py (with Ghostscript compression; paste/replace your existing file)
 import os
 import uuid
 import json
 import atexit
+import subprocess
+import shutil
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, send_file, abort
 from flask_cors import CORS
@@ -20,8 +22,10 @@ app = Flask(__name__)
 UPLOAD_FOLDER = os.environ.get("UPLOAD_FOLDER", "uploads")
 SESSIONS_FILE = os.environ.get("SESSIONS_FILE", "sessions.json")
 SESSION_EXPIRY_HOURS = int(os.environ.get("SESSION_EXPIRY_HOURS", "24"))
-FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://13.201.123.132:3000")
+FRONTEND_URL = os.environ.get("FRONTEND_URL",  "http://13.201.123.132:3000") #"http://13.201.123.132:3000,
 MAX_PARALLEL_DOWNLOADS = int(os.environ.get("MAX_PARALLEL_DOWNLOADS", "6"))
+# Default Ghostscript quality: screen, ebook, printer, prepress
+GHOSTSCRIPT_QUALITY = os.environ.get("GHOSTSCRIPT_QUALITY", "ebook")
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
@@ -341,11 +345,55 @@ def ensure_session_dir(token: str) -> str:
     os.makedirs(d, exist_ok=True)
     return d
 
+def compress_pdf_ghostscript(input_path: str, output_path: str, quality: str = None) -> bool:
+    """
+    Compress PDF using Ghostscript (gs). Returns True if output_path exists after run.
+    quality: one of 'screen', 'ebook', 'printer', 'prepress' (defaults to GHOSTSCRIPT_QUALITY)
+    """
+    q = quality or GHOSTSCRIPT_QUALITY
+    if shutil.which("gs") is None:
+        print("[GHOSTSCRIPT] 'gs' not found in PATH; skipping Ghostscript compression")
+        return False
+    try:
+        cmd = [
+            "gs",
+            "-sDEVICE=pdfwrite",
+            f"-dPDFSETTINGS=/{q}",
+            "-dCompatibilityLevel=1.4",
+            "-dNOPAUSE",
+            "-dQUIET",
+            "-dBATCH",
+            f"-sOutputFile={output_path}",
+            input_path,
+        ]
+        # Run and wait
+        subprocess.run(cmd, check=True)
+        # verify result
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            return True
+        else:
+            print("[GHOSTSCRIPT] output file missing or zero size after gs run")
+            return False
+    except subprocess.CalledProcessError as e:
+        print(f"[GHOSTSCRIPT] gs returned non-zero exit: {e}")
+        return False
+    except Exception as e:
+        print(f"[GHOSTSCRIPT] Error running gs: {e}")
+        return False
+
 def try_compress_pdf(src_path: str, dest_path: str) -> bool:
     """
-    Lightweight re-write using PyPDF2 which sometimes reduces size.
-    Returns True if dest_path exists and is written, False otherwise.
+    Primary attempt: use Ghostscript for real compression.
+    Fallback: PyPDF2 lightweight rewrite (may not reduce size).
+    Returns True if dest_path exists after operation.
     """
+    # First, attempt Ghostscript if available
+    gs_ok = compress_pdf_ghostscript(src_path, dest_path)
+    if gs_ok:
+        print(f"[COMPRESS] Ghostscript compressed {src_path} -> {dest_path}")
+        return True
+
+    # Fallback to PyPDF2 rewrite
     try:
         reader = PdfReader(src_path)
         writer = PdfWriter()
@@ -354,9 +402,14 @@ def try_compress_pdf(src_path: str, dest_path: str) -> bool:
         # copy metadata (keeps minimal)
         with open(dest_path, "wb") as f:
             writer.write(f)
-        return os.path.exists(dest_path)
+        if os.path.exists(dest_path) and os.path.getsize(dest_path) > 0:
+            print(f"[COMPRESS] PyPDF2 rewrite created {dest_path}")
+            return True
+        else:
+            print("[COMPRESS] PyPDF2 rewrite failed to create a valid file")
+            return False
     except Exception as e:
-        print(f"[COMPRESS] failed compressing {src_path}: {e}")
+        print(f"[COMPRESS] failed compressing {src_path} with PyPDF2 fallback: {e}")
         return False
 
 def download_file_stream(url: str, dest_path: str, timeout=20) -> bool:
@@ -449,7 +502,7 @@ def prepare_page():
             prepared_items.append({"index": abs_index, "compressed_url": None, "original_link": link})
             continue
 
-        # Try compressing (rewrite) - if it fails use original file
+        # Try compressing (Ghostscript primary, PyPDF2 fallback) - if it fails use original file
         compressed_ok = try_compress_pdf(tmp_download, compressed)
         if compressed_ok:
             # keep compressed path, remove original download if present
