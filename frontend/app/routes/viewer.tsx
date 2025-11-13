@@ -19,29 +19,24 @@ export default function Viewer() {
   const [noSession, setNoSession] = useState<boolean>(false);
   const [page, setPage] = useState<number>(0);
   const [sessionChecking, setSessionChecking] = useState<boolean>(true);
-  const [token, setToken] = useState<string | null>(null);
-  // absoluteIndex -> compressed url string | null (explicit)
-  const [compressedUrls, setCompressedUrls] = useState<Record<number, string | null>>({});
-  const [preparingPage, setPreparingPage] = useState<boolean>(false);
-
-  // modal state
-  const [modalOpen, setModalOpen] = useState<boolean>(false);
-  const [modalSrc, setModalSrc] = useState<string | null>(null);
-
-  const itemsPerPage = 5; // visible items per page
+  const [token, setToken] = useState<string | null>(null); // <- store token here
+  const itemsPerPage = 5;
   const navigate = useNavigate();
 
+  // populate token only on the client
   useEffect(() => {
     if (typeof window !== "undefined") {
       const t = window.localStorage.getItem("review_token");
       setToken(t);
     }
+    // then check session (checkSession uses localStorage inside useEffect too)
     checkSession();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const buildHeaders = (tokenFromStorage?: string) => {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
+    // prefer provided token, then token state
     const t =
       tokenFromStorage ??
       token ??
@@ -51,6 +46,7 @@ export default function Viewer() {
   };
 
   const checkSession = async () => {
+    // run only on client - this function is called inside useEffect above
     if (typeof window === "undefined") {
       setSessionChecking(false);
       setLoading(false);
@@ -76,10 +72,12 @@ export default function Viewer() {
       const result = await response.json().catch(() => ({}));
 
       if (response.ok && result.hasSession) {
+        console.log("Session is valid, fetching data...");
         setNoSession(false);
         setToken(currentToken);
-        await fetchData(currentToken);
+        await fetchData();
       } else {
+        console.warn("Session is invalid or expired");
         window.localStorage.removeItem("review_token");
         setToken(null);
         setNoSession(true);
@@ -95,14 +93,13 @@ export default function Viewer() {
     }
   };
 
-  const fetchData = async (overrideToken?: string) => {
+  const fetchData = async () => {
     try {
       const currentToken =
-        overrideToken ??
-        token ??
-        (typeof window !== "undefined" ? window.localStorage.getItem("review_token") : null);
+        token ?? (typeof window !== "undefined" ? window.localStorage.getItem("review_token") : null);
 
       if (!currentToken) {
+        console.warn("No token found in localStorage");
         setNoSession(true);
         setData([]);
         return;
@@ -114,6 +111,8 @@ export default function Viewer() {
       });
 
       if (response.status === 401) {
+        // Token expired or invalid
+        console.warn("Token expired or invalid");
         if (typeof window !== "undefined") window.localStorage.removeItem("review_token");
         setToken(null);
         setNoSession(true);
@@ -123,7 +122,14 @@ export default function Viewer() {
         return;
       }
 
-      const result = await response.json().catch(() => ({}));
+      let result: any = {};
+      try {
+        result = await response.json();
+      } catch (err) {
+        console.error("JSON parse failed:", err);
+        result = {};
+      }
+
       const items = Array.isArray(result.data) ? result.data : [];
 
       if (response.ok && items.length > 0) {
@@ -142,58 +148,7 @@ export default function Viewer() {
     }
   };
 
-  // prepare current page (ask backend to download+compress 10 items: visible 5 + preload 5)
-  useEffect(() => {
-    const prepare = async () => {
-      const currentToken =
-        token ?? (typeof window !== "undefined" ? window.localStorage.getItem("review_token") : null);
-      if (!currentToken || data.length === 0) {
-        setCompressedUrls({});
-        return;
-      }
-
-      setPreparingPage(true);
-
-      try {
-        // Request server to prepare page (10 items = 5 visible + 5 preload)
-        const resp = await fetch(`${API_URL}/api/prepare-page`, {
-          method: "POST",
-          headers: buildHeaders(currentToken),
-          body: JSON.stringify({ page, items_per_page: 10 }),
-        });
-
-        if (!resp.ok) {
-          console.warn("prepare-page failed", resp.status);
-          setCompressedUrls({});
-          setPreparingPage(false);
-          return;
-        }
-
-        const result = await resp.json();
-        const map: Record<number, string | null> = {};
-
-        if (Array.isArray(result.items)) {
-          result.items.forEach((it: any) => {
-            const idx = Number(it.index);
-            map[idx] = it.compressed_url ? String(it.compressed_url) : null;
-          });
-        }
-
-        // merge with previous (keep any existing known entries)
-        setCompressedUrls((prev) => ({ ...prev, ...map }));
-      } catch (err) {
-        console.error("prepare-page error", err);
-        setCompressedUrls({});
-      } finally {
-        setPreparingPage(false);
-      }
-    };
-
-    prepare();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, token, data.length]);
-
-  const totalPages = Math.ceil(data.length / itemsPerPage);
+  const totalPages = Math.max(1, Math.ceil(data.length / itemsPerPage));
 
   const updateStatus = async (absoluteIndex: number, status: string, providedFeedback = "") => {
     const currentToken =
@@ -212,7 +167,7 @@ export default function Viewer() {
         body: JSON.stringify({
           index: absoluteIndex,
           status,
-          feedback: providedFeedback || "",
+          feedback: status === "Rejected" ? providedFeedback : "",
         }),
       });
 
@@ -231,13 +186,20 @@ export default function Viewer() {
 
         setData((prev) => {
           const copy = [...prev];
-          if (absoluteIndex >= 0 && absoluteIndex < copy.length) {
-            copy[absoluteIndex] = {
-              ...copy[absoluteIndex],
-              Status: status,
-              // when rejected, we preserve existing Feedback on server unless provided; frontend not forcing any new feedback
-            };
-          }
+          copy[absoluteIndex] = {
+            ...copy[absoluteIndex],
+            Status: status,
+            Feedback:
+              status === "Rejected"
+                ? providedFeedback || copy[absoluteIndex]?.Feedback
+                : copy[absoluteIndex]?.Feedback,
+          };
+          return copy;
+        });
+
+        setFeedbacks((prev) => {
+          const copy = { ...prev };
+          delete copy[absoluteIndex];
           return copy;
         });
       } else {
@@ -250,13 +212,20 @@ export default function Viewer() {
     }
   };
 
+  const [feedbacks, setFeedbacks] = useState<Record<number, string>>({});
+
   const handleAccept = (absoluteIndex: number) => {
     updateStatus(absoluteIndex, "Accepted");
   };
 
+  // REJECT no longer requires feedback — immediate call
   const handleReject = (absoluteIndex: number) => {
-    // Rejection no longer requires feedback — just call update
-    updateStatus(absoluteIndex, "Rejected");
+    const fb = feedbacks[absoluteIndex] || "";
+    updateStatus(absoluteIndex, "Rejected", fb);
+  };
+
+  const handleFeedbackChange = (absoluteIndex: number, value: string) => {
+    setFeedbacks((prev) => ({ ...prev, [absoluteIndex]: value }));
   };
 
   const handlePrevPage = () => setPage((p) => Math.max(0, p - 1));
@@ -290,6 +259,7 @@ export default function Viewer() {
         const a = document.createElement("a");
         a.href = url;
         a.download = "reviewed_results.csv";
+        // ensure this click uses user gesture
         a.click();
         window.URL.revokeObjectURL(url);
       } else {
@@ -327,6 +297,7 @@ export default function Viewer() {
           </p>
           <div className="flex justify-center gap-4">
             <button
+              type="button"
               onClick={() => navigate("/")}
               className="px-6 py-2 bg-white text-black rounded-lg hover:bg-gray-200 transition-colors"
             >
@@ -334,6 +305,7 @@ export default function Viewer() {
             </button>
             {token && (
               <button
+                type="button"
                 onClick={() => {
                   if (typeof window !== "undefined") window.localStorage.removeItem("review_token");
                   setToken(null);
@@ -354,29 +326,22 @@ export default function Viewer() {
   const end = Math.min(start + itemsPerPage, data.length);
   const pageItems = data.slice(start, end);
 
-  const openModalForIndex = (absoluteIndex: number) => {
-    const compressed = compressedUrls[absoluteIndex];
-    const src =
-      typeof compressed === "string" && compressed
-        ? `${compressed}#view=FitH`
-        : `${data[absoluteIndex]?.link}#view=FitH`; // fallback to original if compressed missing
-    setModalSrc(src);
-    setModalOpen(true);
-  };
-
   return (
     <div className="min-h-screen bg-black p-6">
+      {/* rest of your render remains unchanged */}
       <div className="max-w-7xl mx-auto">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-2xl font-semibold text-white">PDF Reviewer — Grid ({itemsPerPage} per page)</h2>
+          <h2 className="text-2xl font-semibold text-white">PDF Reviewer — Grid (5 per page)</h2>
           <div className="flex gap-2">
             <button
+              type="button"
               onClick={() => navigate("/")}
               className="px-3 py-2 border border-gray-700 text-white rounded-lg text-sm hover:bg-gray-900 transition-colors"
             >
               ← Back
             </button>
             <button
+              type="button"
               onClick={handleExport}
               className="px-3 py-2 border border-gray-700 text-white rounded-lg text-sm hover:bg-gray-900 transition-colors"
             >
@@ -387,16 +352,14 @@ export default function Viewer() {
 
         {message && <div className="text-sm text-green-400 p-2 bg-gray-900 rounded mb-4">{message}</div>}
 
-        {preparingPage && (
-          <div className="mb-3 text-sm text-gray-300">Preparing PDFs for this page (downloading + compressing)...</div>
-        )}
-
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {pageItems.map((item, idx) => {
             const absoluteIndex = start + idx;
-            const compressed = compressedUrls[absoluteIndex];
-            const src = typeof compressed === "string" && compressed ? `${compressed}#view=FitH` : null; // only if prepared
-            const displayStatus = item.Status || "Pending";
+
+            // Use Google Docs Viewer to embed PDFs to avoid raw-content download popups.
+            // If privacy or internal PDFs are a concern, replace this with a server-side proxy
+            // that serves the PDF with Content-Disposition: inline
+            const viewerSrc = `https://docs.google.com/gview?url=${encodeURIComponent(item.link)}&embedded=true`;
 
             return (
               <div key={absoluteIndex} className="bg-black border border-gray-700 rounded-lg p-3">
@@ -405,43 +368,28 @@ export default function Viewer() {
                   <div className="text-xs">
                     <span
                       className={`px-2 py-1 rounded text-xs ${
-                        displayStatus === "Accepted"
+                        item.Status === "Accepted"
                           ? "bg-green-900 text-green-300"
-                          : displayStatus === "Rejected"
+                          : item.Status === "Rejected"
                           ? "bg-red-900 text-red-300"
                           : "bg-gray-800 text-gray-400"
                       }`}
                     >
-                      {displayStatus}
+                      {item.Status || "Pending"}
                     </span>
                   </div>
                 </div>
 
-                {/* preview area: clickable only if src exists */}
-                <div
-                  className={`h-48 bg-white rounded overflow-hidden mb-3 cursor-pointer ${src ? "hover:scale-[1.01] transition-transform" : ""}`}
-                  onClick={() => {
-                    if (src) openModalForIndex(absoluteIndex);
-                    else {
-                      // if not prepared yet, optionally request prepare again for this page
-                      setMessage("Preview not ready yet — preparing on server...");
-                      setTimeout(() => setMessage(""), 2000);
-                    }
-                  }}
-                >
-                  {src ? (
-                    <iframe src={src} className="w-full h-full border-0" title={`PDF ${absoluteIndex + 1}`} loading="lazy" />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center text-gray-600">
-                      <div className="text-center">
-                        <div className="mb-2">Preview not ready</div>
-                        <div className="text-xs text-gray-500">Preparing PDF on server...</div>
-                      </div>
-                    </div>
-                  )}
+                <div className="h-48 bg-white rounded overflow-hidden mb-3">
+                  <iframe
+                    src={viewerSrc}
+                    className="w-full h-full border-0"
+                    title={`PDF ${absoluteIndex + 1}`}
+                    loading="lazy"
+                  />
                 </div>
 
-                {/* original link (always shown) */}
+                {/* original link now shown directly below preview */}
                 <div className="mb-3">
                   <a
                     href={item.link}
@@ -449,7 +397,8 @@ export default function Viewer() {
                     rel="noopener noreferrer"
                     className="text-xs text-blue-300 underline break-all"
                     onClick={(e) => {
-                      /* allow manual open in new tab; don't navigate SPA */
+                      // prevent bubbling / accidental handlers when user explicitly opens link
+                      e.stopPropagation();
                     }}
                   >
                     Open original PDF (external)
@@ -458,12 +407,14 @@ export default function Viewer() {
 
                 <div className="flex gap-2 mb-2">
                   <button
+                    type="button"
                     onClick={() => handleAccept(absoluteIndex)}
                     className="flex-1 px-3 py-2 bg-white text-black rounded-lg hover:bg-gray-200 transition-colors font-medium"
                   >
                     ✅ Accept
                   </button>
                   <button
+                    type="button"
                     onClick={() => handleReject(absoluteIndex)}
                     className="flex-1 px-3 py-2 border border-gray-700 text-white rounded-lg hover:bg-gray-900 transition-colors font-medium"
                   >
@@ -471,9 +422,19 @@ export default function Viewer() {
                   </button>
                 </div>
 
-                {item.Feedback && (
-                  <div className="mt-2 text-xs text-gray-400 p-1 bg-gray-900 rounded">Current: {item.Feedback}</div>
-                )}
+                <div>
+                  <label className="block text-xs text-white mb-1">Rejection Reason (optional)</label>
+                  <textarea
+                    value={feedbacks[absoluteIndex] || ""}
+                    onChange={(e) => handleFeedbackChange(absoluteIndex, e.target.value)}
+                    className="w-full px-2 py-1 bg-black border border-gray-700 text-white rounded-lg focus:outline-none text-sm placeholder-gray-500"
+                    rows={2}
+                    placeholder={item.Feedback ? `Current: ${item.Feedback}` : "Enter reason for rejection (optional)"}
+                  />
+                  {item.Feedback && !feedbacks[absoluteIndex] && (
+                    <div className="mt-2 text-xs text-gray-400 p-1 bg-gray-900 rounded">Saved: {item.Feedback}</div>
+                  )}
+                </div>
               </div>
             );
           })}
@@ -483,6 +444,7 @@ export default function Viewer() {
           <div className="text-sm text-gray-400">Page {page + 1} of {Math.max(1, totalPages)}</div>
           <div className="flex gap-2">
             <button
+              type="button"
               onClick={handlePrevPage}
               disabled={page === 0}
               className="px-3 py-2 border border-gray-700 text-white rounded-lg disabled:opacity-40"
@@ -490,11 +452,8 @@ export default function Viewer() {
               ← Prev
             </button>
             <button
-              onClick={() => {
-                const newPage = Math.min(totalPages - 1, page + 1);
-                setPage(newPage);
-                // prepare effect triggers automatically
-              }}
+              type="button"
+              onClick={handleNextPage}
               disabled={page >= totalPages - 1}
               className="px-3 py-2 border border-gray-700 text-white rounded-lg disabled:opacity-40"
             >
@@ -504,34 +463,10 @@ export default function Viewer() {
         </div>
 
         <div className="mt-4 text-gray-400 text-sm">
-          Total: {data.length} items | Accepted: {data.filter(d => d.Status === "Accepted").length} | Rejected: {data.filter(d => d.Status === "Rejected").length} | Pending: {data.filter(d => !d.Status || d.Status === "Pending").length}
+          Total: {data.length} items | Accepted: {data.filter((d) => d.Status === "Accepted").length} | Rejected:{" "}
+          {data.filter((d) => d.Status === "Rejected").length} | Pending: {data.filter((d) => !d.Status).length}
         </div>
       </div>
-
-      {/* Modal for larger preview */}
-      {modalOpen && modalSrc && (
-        <div
-          className="fixed inset-0 bg-black/75 flex items-center justify-center z-50 p-4"
-          onClick={() => setModalOpen(false)}
-        >
-          <div className="w-full max-w-5xl h-[80vh] bg-black rounded-lg overflow-hidden" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between p-2 border-b border-gray-800">
-              <div className="text-sm text-white">PDF Preview</div>
-              <div>
-                <button
-                  onClick={() => setModalOpen(false)}
-                  className="px-3 py-1 bg-gray-800 text-white rounded"
-                >
-                  Close
-                </button>
-              </div>
-            </div>
-            <div className="w-full h-full">
-              <iframe src={modalSrc} className="w-full h-full border-0" title="Large PDF preview" />
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
