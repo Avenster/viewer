@@ -471,7 +471,14 @@ def get_data():
 
 @app.route("/api/update-status", methods=["POST"])
 def update_status():
-    """Update status and feedback for a specific item"""
+    """
+    Update status and feedback for a specific item.
+
+    Accepts either:
+      - { "index": <int>, "status": "...", "feedback": "..." }  # legacy
+      - { "link": "<unique_link>", "status": "...", "feedback": "..." }  # preferred
+    The function updates the CSV row that matches the link (preferred) or index.
+    """
     token, csv_path = get_session_from_request()
     print(f"[UPDATE] token={token}, csv_path={csv_path}")
     
@@ -482,9 +489,10 @@ def update_status():
     index = body.get("index")
     status = body.get("status")
     feedback = body.get("feedback", "")
-    
-    if index is None or status is None:
-        return jsonify({"error": "Missing index or status"}), 400
+    link = body.get("link")
+
+    if status is None:
+        return jsonify({"error": "Missing status"}), 400
     
     try:
         df = _read_csv_with_fallbacks(csv_path)
@@ -496,26 +504,38 @@ def update_status():
     if not link_col:
         return jsonify({"error": "'link' column missing in stored CSV"}), 500
 
-    # guard index bounds
-    try:
-        idx = int(index)
-    except Exception:
-        return jsonify({"error": "Invalid index (must be integer)"}), 400
-
-    if not (0 <= idx < len(df)):
-        return jsonify({"error": "Invalid index"}), 400
-    
-    # Ensure Status and Feedback columns exist
+    # Normalize Status/Feedback columns presence
     if "Status" not in df.columns:
         df["Status"] = ""
     if "Feedback" not in df.columns:
         df["Feedback"] = ""
 
+    # Decide which row to update: prefer link match
+    target_idx = None
+    if link:
+        link = str(link).strip()
+        matches = df.index[df["link"].astype(str).str.strip() == link].tolist()
+        if len(matches) == 0:
+            return jsonify({"error": "Link not found"}), 400
+        target_idx = matches[0]
+    else:
+        # fallback to index if provided (legacy)
+        if index is None:
+            return jsonify({"error": "Missing index or link to identify row"}), 400
+        try:
+            idx = int(index)
+        except Exception:
+            return jsonify({"error": "Invalid index (must be integer)"}), 400
+
+        if not (0 <= idx < len(df)):
+            return jsonify({"error": "Invalid index"}), 400
+        target_idx = idx
+
     # Normalize incoming status to canonical values
     canonical = _normalize_status_value(status)
-    df.loc[idx, "Status"] = canonical
-    df.loc[idx, "Feedback"] = feedback if canonical == "Rejected" else ""
-    
+    df.loc[target_idx, "Status"] = canonical
+    df.loc[target_idx, "Feedback"] = feedback if canonical == "Rejected" else ""
+
     df = df.fillna("")
     try:
         df.to_csv(csv_path, index=False, encoding="utf-8")
@@ -523,8 +543,8 @@ def update_status():
         print(f"[UPDATE] Failed to write CSV: {e}")
         return jsonify({"error": f"Failed to save CSV: {e}"}), 500
     
-    print(f"[UPDATE] token={token}, index={index}, status={canonical}, feedback={feedback[:50] if feedback else 'none'}")
-    return jsonify({"message": f"Marked as {canonical}"}), 200
+    print(f"[UPDATE] token={token}, target_idx={target_idx}, status={canonical}, feedback={'(hidden)' if feedback else 'none'}")
+    return jsonify({"message": f"Marked row {target_idx} as {canonical}"}), 200
 
 @app.route("/api/download", methods=["GET"])
 def download_csv():
