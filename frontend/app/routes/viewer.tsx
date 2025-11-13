@@ -1,4 +1,4 @@
-// Viewer.tsx (modified)
+// Viewer.tsx
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 
@@ -10,7 +10,7 @@ interface DataItem {
 }
 
 // Use environment variable or fallback to localhost
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
+const API_URL = (import.meta.env.VITE_API_URL as string) || "http://13.201.123.132:5000";
 
 export default function Viewer() {
   const [data, setData] = useState<DataItem[]>([]);
@@ -37,7 +37,10 @@ export default function Viewer() {
   const buildHeaders = (tokenFromStorage?: string) => {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     // prefer provided token, then token state
-    const t = tokenFromStorage ?? token ?? (typeof window !== "undefined" ? window.localStorage.getItem("review_token") : null);
+    const t =
+      tokenFromStorage ??
+      token ??
+      (typeof window !== "undefined" ? window.localStorage.getItem("review_token") : null);
     if (t) headers["X-Session-Token"] = t;
     return headers;
   };
@@ -92,7 +95,8 @@ export default function Viewer() {
 
   const fetchData = async () => {
     try {
-      const currentToken = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("review_token") : null);
+      const currentToken =
+        token ?? (typeof window !== "undefined" ? window.localStorage.getItem("review_token") : null);
 
       if (!currentToken) {
         console.warn("No token found in localStorage");
@@ -144,10 +148,11 @@ export default function Viewer() {
     }
   };
 
-  const totalPages = Math.ceil(data.length / itemsPerPage);
+  const totalPages = Math.max(1, Math.ceil(data.length / itemsPerPage));
 
   const updateStatus = async (absoluteIndex: number, status: string, providedFeedback = "") => {
-    const currentToken = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("review_token") : null);
+    const currentToken =
+      token ?? (typeof window !== "undefined" ? window.localStorage.getItem("review_token") : null);
 
     if (!currentToken) {
       setMessage("❌ No active session/token. Please upload CSV again.");
@@ -184,7 +189,10 @@ export default function Viewer() {
           copy[absoluteIndex] = {
             ...copy[absoluteIndex],
             Status: status,
-            Feedback: status === "Rejected" ? providedFeedback : "",
+            Feedback:
+              status === "Rejected"
+                ? providedFeedback || copy[absoluteIndex]?.Feedback
+                : copy[absoluteIndex]?.Feedback,
           };
           return copy;
         });
@@ -210,25 +218,9 @@ export default function Viewer() {
     updateStatus(absoluteIndex, "Accepted");
   };
 
+  // REJECT no longer requires feedback — immediate call
   const handleReject = (absoluteIndex: number) => {
     const fb = feedbacks[absoluteIndex] || "";
-
-    if (!fb.trim()) {
-      setMessage("⚠️ No rejection reason provided — moving to next item (left unchanged)");
-      setTimeout(() => setMessage(""), 2000);
-
-      const pageStart = page * itemsPerPage;
-      const pageEnd = Math.min(pageStart + itemsPerPage - 1, data.length - 1);
-
-      let nextIndex = absoluteIndex + 1;
-      if (nextIndex >= data.length) nextIndex = absoluteIndex;
-
-      const nextPage = Math.floor(nextIndex / itemsPerPage);
-      if (nextPage !== page) setPage(nextPage);
-
-      return;
-    }
-
     updateStatus(absoluteIndex, "Rejected", fb);
   };
 
@@ -240,7 +232,8 @@ export default function Viewer() {
   const handleNextPage = () => setPage((p) => Math.min(totalPages - 1, p + 1));
 
   const handleExport = async () => {
-    const currentToken = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("review_token") : null);
+    const currentToken =
+      token ?? (typeof window !== "undefined" ? window.localStorage.getItem("review_token") : null);
 
     if (!currentToken) {
       setMessage("❌ No active session/token. Please upload CSV again.");
@@ -266,6 +259,7 @@ export default function Viewer() {
         const a = document.createElement("a");
         a.href = url;
         a.download = "reviewed_results.csv";
+        // ensure this click uses user gesture
         a.click();
         window.URL.revokeObjectURL(url);
       } else {
@@ -303,6 +297,7 @@ export default function Viewer() {
           </p>
           <div className="flex justify-center gap-4">
             <button
+              type="button"
               onClick={() => navigate("/")}
               className="px-6 py-2 bg-white text-black rounded-lg hover:bg-gray-200 transition-colors"
             >
@@ -310,6 +305,7 @@ export default function Viewer() {
             </button>
             {token && (
               <button
+                type="button"
                 onClick={() => {
                   if (typeof window !== "undefined") window.localStorage.removeItem("review_token");
                   setToken(null);
@@ -333,19 +329,19 @@ export default function Viewer() {
   return (
     <div className="min-h-screen bg-black p-6">
       {/* rest of your render remains unchanged */}
-      {/* ... (same UI you had) */}
-      {/* I preserved the rest in your original file; keep it as-is */}
       <div className="max-w-7xl mx-auto">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-2xl font-semibold text-white">PDF Reviewer — Grid (5 per page)</h2>
           <div className="flex gap-2">
             <button
+              type="button"
               onClick={() => navigate("/")}
               className="px-3 py-2 border border-gray-700 text-white rounded-lg text-sm hover:bg-gray-900 transition-colors"
             >
               ← Back
             </button>
             <button
+              type="button"
               onClick={handleExport}
               className="px-3 py-2 border border-gray-700 text-white rounded-lg text-sm hover:bg-gray-900 transition-colors"
             >
@@ -359,6 +355,12 @@ export default function Viewer() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {pageItems.map((item, idx) => {
             const absoluteIndex = start + idx;
+
+            // Use Google Docs Viewer to embed PDFs to avoid raw-content download popups.
+            // If privacy or internal PDFs are a concern, replace this with a server-side proxy
+            // that serves the PDF with Content-Disposition: inline
+            const viewerSrc = `https://docs.google.com/gview?url=${encodeURIComponent(item.link)}&embedded=true`;
+
             return (
               <div key={absoluteIndex} className="bg-black border border-gray-700 rounded-lg p-3">
                 <div className="text-sm text-gray-300 mb-2 flex items-center justify-between">
@@ -380,21 +382,39 @@ export default function Viewer() {
 
                 <div className="h-48 bg-white rounded overflow-hidden mb-3">
                   <iframe
-                    src={`${item.link}#view=FitH`}
+                    src={viewerSrc}
                     className="w-full h-full border-0"
                     title={`PDF ${absoluteIndex + 1}`}
                     loading="lazy"
                   />
                 </div>
 
+                {/* original link now shown directly below preview */}
+                <div className="mb-3">
+                  <a
+                    href={item.link}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-blue-300 underline break-all"
+                    onClick={(e) => {
+                      // prevent bubbling / accidental handlers when user explicitly opens link
+                      e.stopPropagation();
+                    }}
+                  >
+                    Open original PDF (external)
+                  </a>
+                </div>
+
                 <div className="flex gap-2 mb-2">
                   <button
+                    type="button"
                     onClick={() => handleAccept(absoluteIndex)}
                     className="flex-1 px-3 py-2 bg-white text-black rounded-lg hover:bg-gray-200 transition-colors font-medium"
                   >
                     ✅ Accept
                   </button>
                   <button
+                    type="button"
                     onClick={() => handleReject(absoluteIndex)}
                     className="flex-1 px-3 py-2 border border-gray-700 text-white rounded-lg hover:bg-gray-900 transition-colors font-medium"
                   >
@@ -403,16 +423,16 @@ export default function Viewer() {
                 </div>
 
                 <div>
-                  <label className="block text-xs text-white mb-1">Rejection Reason</label>
+                  <label className="block text-xs text-white mb-1">Rejection Reason (optional)</label>
                   <textarea
-                    value={feedbacks[absoluteIndex] || item.Feedback || ""}
+                    value={feedbacks[absoluteIndex] || ""}
                     onChange={(e) => handleFeedbackChange(absoluteIndex, e.target.value)}
                     className="w-full px-2 py-1 bg-black border border-gray-700 text-white rounded-lg focus:outline-none text-sm placeholder-gray-500"
                     rows={2}
-                    placeholder="Enter reason for rejection (optional)"
+                    placeholder={item.Feedback ? `Current: ${item.Feedback}` : "Enter reason for rejection (optional)"}
                   />
-                  {item.Feedback && (
-                    <div className="mt-2 text-xs text-gray-400 p-1 bg-gray-900 rounded">Current: {item.Feedback}</div>
+                  {item.Feedback && !feedbacks[absoluteIndex] && (
+                    <div className="mt-2 text-xs text-gray-400 p-1 bg-gray-900 rounded">Saved: {item.Feedback}</div>
                   )}
                 </div>
               </div>
@@ -424,6 +444,7 @@ export default function Viewer() {
           <div className="text-sm text-gray-400">Page {page + 1} of {Math.max(1, totalPages)}</div>
           <div className="flex gap-2">
             <button
+              type="button"
               onClick={handlePrevPage}
               disabled={page === 0}
               className="px-3 py-2 border border-gray-700 text-white rounded-lg disabled:opacity-40"
@@ -431,6 +452,7 @@ export default function Viewer() {
               ← Prev
             </button>
             <button
+              type="button"
               onClick={handleNextPage}
               disabled={page >= totalPages - 1}
               className="px-3 py-2 border border-gray-700 text-white rounded-lg disabled:opacity-40"
@@ -441,7 +463,8 @@ export default function Viewer() {
         </div>
 
         <div className="mt-4 text-gray-400 text-sm">
-          Total: {data.length} items | Accepted: {data.filter(d => d.Status === "Accepted").length} | Rejected: {data.filter(d => d.Status === "Rejected").length} | Pending: {data.filter(d => !d.Status).length}
+          Total: {data.length} items | Accepted: {data.filter((d) => d.Status === "Accepted").length} | Rejected:{" "}
+          {data.filter((d) => d.Status === "Rejected").length} | Pending: {data.filter((d) => !d.Status).length}
         </div>
       </div>
     </div>
