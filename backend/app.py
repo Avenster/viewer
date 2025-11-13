@@ -1,6 +1,4 @@
 # app.py
-# http://localhost:5173
-# app.py
 import os
 import uuid
 import json
@@ -113,9 +111,9 @@ def _normalize_columns_and_get_link_column(df: pd.DataFrame):
     lower_map = {str(c).lower(): c for c in df.columns}
 
     # common variants to check
-    for candidate in ("link", "url", "Link", "Link "):
-        if candidate.lower() in lower_map:
-            orig = lower_map[candidate.lower()]
+    for candidate in ("link", "url"):
+        if candidate in lower_map:
+            orig = lower_map[candidate]
             if orig != "link":
                 df = df.rename(columns={orig: "link"})
             return df, "link"
@@ -157,7 +155,6 @@ def _normalize_status_value(val: str) -> str:
       - 'Accepted' for accepts
       - 'Rejected' for rejects
       - '' (empty) for pending / unknown
-    Preserve non-empty unknown values by trimming but prefer canonical mapping.
     """
     if val is None:
         return ""
@@ -166,23 +163,36 @@ def _normalize_status_value(val: str) -> str:
         return ""
     ls = s.lower()
     # common accept variants
-    if ls in ("accept", "accepted", "acept", "acpt"):
-        return "Accepted"
-    if ls.startswith("accept"):
+    if ls in ("accept", "accepted", "acept", "acpt") or ls.startswith("accept"):
         return "Accepted"
     # common reject variants
-    if ls in ("reject", "rejected", "rej", "rejected "):
+    if ls in ("reject", "rejected", "rej") or ls.startswith("reject"):
         return "Rejected"
-    if ls.startswith("reject"):
-        return "Rejected"
-    # some CSVs use 'Accept' / 'Reject' exactly, map them too
-    if ls in ("accept ", "reject "):
-        return "Accepted" if "accept" in ls else "Rejected"
     # if value is already canonical
     if s in ("Accepted", "Rejected"):
         return s
-    # otherwise, return trimmed original (so user can see any custom markers)
+    # otherwise, return trimmed original
     return s
+
+def _find_verified_column(df: pd.DataFrame):
+    """
+    Find a column that represents 'Verified By' (various variants).
+    Return the column name or None.
+    """
+    for c in df.columns:
+        if not isinstance(c, str):
+            continue
+        lc = c.lower().replace("_", " ").strip()
+        # match common variants
+        if "verified" in lc and ("by" in lc or lc.endswith("verified") or lc == "verified"):
+            return c
+        if lc in ("verified by", "verified_by", "verifiedby", "verified"):
+            return c
+    # fallback: try any column that contains 'verified' substring
+    for c in df.columns:
+        if isinstance(c, str) and "verified" in c.lower():
+            return c
+    return None
 
 def get_session_from_request():
     """Extract and validate session token from request"""
@@ -297,23 +307,31 @@ def upload_csv():
     df = df.drop_duplicates(subset=["link"], keep="first").reset_index(drop=True)
     duplicates_removed = original_count - len(df)
     
-    # Normalize Status/Feedback column names
+    # Normalize Status/Feedback/Verified columns
     col_map = {c: c.strip() for c in df.columns}
     if any(k != v for k, v in col_map.items()):
         df = df.rename(columns=col_map)
 
-    # rename case-insensitive status/feedback to canonical names
-    for c in df.columns:
+    # rename case-insensitive status/feedback/verified to canonical names
+    for c in list(df.columns):
         if c.lower() == "status" and c != "Status":
             df = df.rename(columns={c: "Status"})
         if c.lower() == "feedback" and c != "Feedback":
             df = df.rename(columns={c: "Feedback"})
+        # Verified By variants -> canonical "Verified By"
+        lc = c.lower().replace("_", " ").strip()
+        if "verified" in lc and ("by" in lc or lc == "verified"):
+            if c != "Verified By":
+                df = df.rename(columns={c: "Verified By"})
 
     # ensure columns exist
     if "Status" not in df.columns:
         df["Status"] = ""
     if "Feedback" not in df.columns:
         df["Feedback"] = ""
+    if "Verified By" not in df.columns:
+        # leave absent if not provided; we'll add empty column so frontend always sees it
+        df["Verified By"] = ""
 
     # Normalize status values so frontend shows Accepted/Rejected/Pending consistently
     df["Status"] = df["Status"].apply(_normalize_status_value)
@@ -394,6 +412,8 @@ def get_data():
     if not os.path.exists(csv_path):
         print(f"[DATA] file not found at {csv_path}")
         return jsonify({"error": "CSV file not found on server"}), 404
+
+    verifier = request.args.get("verifier")  # optional filter value
     
     try:
         df = _read_csv_with_fallbacks(csv_path)
@@ -409,11 +429,10 @@ def get_data():
     # coerce to strings and fillna
     df["link"] = df["link"].astype(str).str.strip()
 
-    # Normalize Status column if present, otherwise add it
+    # Normalize status column
     if "Status" in df.columns:
         df["Status"] = df["Status"].apply(_normalize_status_value)
     else:
-        # try to find case-insensitive status
         for c in df.columns:
             if isinstance(c, str) and c.lower() == "status":
                 df = df.rename(columns={c: "Status"})
@@ -422,8 +441,8 @@ def get_data():
         else:
             df["Status"] = ""
 
+    # Ensure Feedback and Verified By columns exist (case-insensitive mapping)
     if "Feedback" not in df.columns:
-        # try case-insensitive
         for c in df.columns:
             if isinstance(c, str) and c.lower() == "feedback":
                 df = df.rename(columns={c: "Feedback"})
@@ -431,10 +450,23 @@ def get_data():
         if "Feedback" not in df.columns:
             df["Feedback"] = ""
 
+    # Detect verified column and normalize name to 'Verified By' if present
+    vcol = _find_verified_column(df)
+    if vcol and vcol != "Verified By":
+        df = df.rename(columns={vcol: "Verified By"})
+    if "Verified By" not in df.columns:
+        df["Verified By"] = ""
+
+    # apply verifier filtering if requested
+    if verifier:
+        verifier = str(verifier).strip().lower()
+        # perform case-insensitive exact match on Verified By column
+        df = df[df["Verified By"].astype(str).str.strip().str.lower() == verifier].reset_index(drop=True)
+
     df = df.fillna("")
     data = df.to_dict("records")
     
-    print(f"[DATA] returning {len(data)} rows for token={token}")
+    print(f"[DATA] returning {len(data)} rows for token={token} (verifier filter={'none' if not verifier else verifier})")
     return jsonify({"data": data, "total": len(data)}), 200
 
 @app.route("/api/update-status", methods=["POST"])
@@ -473,12 +505,12 @@ def update_status():
     if not (0 <= idx < len(df)):
         return jsonify({"error": "Invalid index"}), 400
     
-    # Ensure Status and Feedback columns exist (case handled previously)
+    # Ensure Status and Feedback columns exist
     if "Status" not in df.columns:
         df["Status"] = ""
     if "Feedback" not in df.columns:
         df["Feedback"] = ""
-    
+
     # Normalize incoming status to canonical values
     canonical = _normalize_status_value(status)
     df.loc[idx, "Status"] = canonical
@@ -516,6 +548,13 @@ def download_csv():
                     df = df.rename(columns={c: "Status"})
                     df["Status"] = df["Status"].apply(_normalize_status_value)
                     break
+
+        # Detect verified column and rename to 'Verified By' if present
+        vcol = _find_verified_column(df)
+        if vcol and vcol != "Verified By":
+            df = df.rename(columns={vcol: "Verified By"})
+        if "Verified By" not in df.columns:
+            df["Verified By"] = ""
 
         # Remove duplicates that might have been added during review
         if "link" in df.columns:
