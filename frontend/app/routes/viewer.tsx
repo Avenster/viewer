@@ -3,14 +3,16 @@ import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 
 interface DataItem {
-  link: string;
-  Status: string;
-  Feedback: string;
+  // backend now normalizes to "link" but accept either just in case
+  link?: string;
+  Link?: string;
+  Status?: string;
+  Feedback?: string;
   [key: string]: any;
 }
 
 // Use environment variable or fallback to localhost
-const API_URL = (import.meta.env.VITE_API_URL as string) || "http://13.201.123.132:5000";
+const API_URL = (import.meta.env.VITE_API_URL as string) || "http://localhost:5000";
 
 export default function Viewer() {
   const [data, setData] = useState<DataItem[]>([]);
@@ -19,24 +21,21 @@ export default function Viewer() {
   const [noSession, setNoSession] = useState<boolean>(false);
   const [page, setPage] = useState<number>(0);
   const [sessionChecking, setSessionChecking] = useState<boolean>(true);
-  const [token, setToken] = useState<string | null>(null); // <- store token here
+  const [token, setToken] = useState<string | null>(null);
   const itemsPerPage = 5;
   const navigate = useNavigate();
 
-  // populate token only on the client
   useEffect(() => {
     if (typeof window !== "undefined") {
       const t = window.localStorage.getItem("review_token");
       setToken(t);
     }
-    // then check session (checkSession uses localStorage inside useEffect too)
     checkSession();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const buildHeaders = (tokenFromStorage?: string) => {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
-    // prefer provided token, then token state
     const t =
       tokenFromStorage ??
       token ??
@@ -46,7 +45,6 @@ export default function Viewer() {
   };
 
   const checkSession = async () => {
-    // run only on client - this function is called inside useEffect above
     if (typeof window === "undefined") {
       setSessionChecking(false);
       setLoading(false);
@@ -111,7 +109,6 @@ export default function Viewer() {
       });
 
       if (response.status === 401) {
-        // Token expired or invalid
         console.warn("Token expired or invalid");
         if (typeof window !== "undefined") window.localStorage.removeItem("review_token");
         setToken(null);
@@ -132,8 +129,17 @@ export default function Viewer() {
 
       const items = Array.isArray(result.data) ? result.data : [];
 
-      if (response.ok && items.length > 0) {
-        setData(items);
+      // Normalize each item so it always has `link` lower-case
+      const normalized = items.map((it: any) => {
+        const link = it.link ?? it.Link ?? it.URL ?? "";
+        return {
+          ...it,
+          link,
+        };
+      });
+
+      if (response.ok && normalized.length > 0) {
+        setData(normalized);
         setNoSession(false);
       } else {
         setData([]);
@@ -218,7 +224,6 @@ export default function Viewer() {
     updateStatus(absoluteIndex, "Accepted");
   };
 
-  // REJECT no longer requires feedback — immediate call
   const handleReject = (absoluteIndex: number) => {
     const fb = feedbacks[absoluteIndex] || "";
     updateStatus(absoluteIndex, "Rejected", fb);
@@ -258,8 +263,8 @@ export default function Viewer() {
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
+        // attempt to read filename from content-disposition not available here, fallback:
         a.download = "reviewed_results.csv";
-        // ensure this click uses user gesture
         a.click();
         window.URL.revokeObjectURL(url);
       } else {
@@ -328,7 +333,6 @@ export default function Viewer() {
 
   return (
     <div className="min-h-screen bg-black p-6">
-      {/* rest of your render remains unchanged */}
       <div className="max-w-7xl mx-auto">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-2xl font-semibold text-white">PDF Reviewer — Grid (5 per page)</h2>
@@ -355,11 +359,9 @@ export default function Viewer() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {pageItems.map((item, idx) => {
             const absoluteIndex = start + idx;
-
-            // Use Google Docs Viewer to embed PDFs to avoid raw-content download popups.
-            // If privacy or internal PDFs are a concern, replace this with a server-side proxy
-            // that serves the PDF with Content-Disposition: inline
-            const viewerSrc = `https://docs.google.com/gview?url=${encodeURIComponent(item.link)}&embedded=true`;
+            // Use the normalized link (we normalized in fetchData)
+            const pdfLink = item.link || item.Link || "";
+            const viewerSrc = `https://docs.google.com/gview?url=${encodeURIComponent(pdfLink)}&embedded=true`;
 
             return (
               <div key={absoluteIndex} className="bg-black border border-gray-700 rounded-lg p-3">
@@ -389,15 +391,13 @@ export default function Viewer() {
                   />
                 </div>
 
-                {/* original link now shown directly below preview */}
                 <div className="mb-3">
                   <a
-                    href={item.link}
+                    href={pdfLink}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-xs text-blue-300 underline break-all"
                     onClick={(e) => {
-                      // prevent bubbling / accidental handlers when user explicitly opens link
                       e.stopPropagation();
                     }}
                   >
