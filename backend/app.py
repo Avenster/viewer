@@ -1,4 +1,6 @@
 # app.py
+# http://localhost:5173
+# app.py
 import os
 import uuid
 import json
@@ -17,7 +19,7 @@ app = Flask(__name__)
 UPLOAD_FOLDER = os.environ.get("UPLOAD_FOLDER", "uploads")
 SESSIONS_FILE = os.environ.get("SESSIONS_FILE", "sessions.json")
 SESSION_EXPIRY_HOURS = int(os.environ.get("SESSION_EXPIRY_HOURS", "24"))
-FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://13.201.123.132:3000") #http://13.201.123.132:3000
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
@@ -26,8 +28,8 @@ SESSIONS = {}
 # CORS configuration for production
 CORS(
     app,
-    supports_credentials=False,  # Changed to False since we're using token-based auth
-    resources={r"/api/*": {"origins": [FRONTEND_URL, "http://13.201.123.132:3000"]}},
+    supports_credentials=False,
+    resources={r"/api/*": {"origins": [FRONTEND_URL, "http://localhost:5173"]}},
     allow_headers=["Content-Type", "X-Session-Token"],
 )
 
@@ -70,7 +72,10 @@ def clean_expired_sessions():
                 expired_tokens.append(token)
             continue
         
-        expires_at = datetime.fromisoformat(session_data.get("expires_at", "2000-01-01"))
+        try:
+            expires_at = datetime.fromisoformat(session_data.get("expires_at", "2000-01-01"))
+        except Exception:
+            expires_at = datetime(2000, 1, 1)
         if now > expires_at:
             expired_tokens.append(token)
             csv_path = session_data.get("csv_path")
@@ -94,6 +99,91 @@ load_sessions()
 # ==========================
 # Helpers
 # ==========================
+def _normalize_columns_and_get_link_column(df: pd.DataFrame):
+    """
+    Normalize column names (strip spaces) and make a lower-case map.
+    Ensure a 'link' column exists (case-insensitive) by renaming it to 'link'.
+    Returns dataframe (possibly renamed) and the detected link column name.
+    """
+    # strip whitespace from column names
+    new_cols = [c.strip() if isinstance(c, str) else c for c in df.columns]
+    df.columns = new_cols
+
+    # build map of lowercased column names to original
+    lower_map = {str(c).lower(): c for c in df.columns}
+
+    # common variants to check
+    for candidate in ("link", "url", "Link", "Link "):
+        if candidate.lower() in lower_map:
+            orig = lower_map[candidate.lower()]
+            if orig != "link":
+                df = df.rename(columns={orig: "link"})
+            return df, "link"
+
+    # if nothing found, try to find any column that contains 'link' or 'url' substring
+    for orig in df.columns:
+        if isinstance(orig, str) and ("link" in orig.lower() or "url" in orig.lower()):
+            if orig != "link":
+                df = df.rename(columns={orig: "link"})
+            return df, "link"
+
+    return df, None
+
+def _read_csv_with_fallbacks(path: str) -> pd.DataFrame:
+    """
+    Try reading CSV with common encodings to handle BOM/utf errors.
+    Returns a pandas DataFrame or raises the last exception.
+    """
+    tried = []
+    exceptions = []
+    encodings = ["utf-8-sig", "utf-8", "latin1", "cp1252"]
+    for enc in encodings:
+        try:
+            df = pd.read_csv(path, dtype=str, encoding=enc)
+            # convert NaNs to empty strings for consistent downstream handling
+            df = df.fillna("")
+            return df
+        except Exception as e:
+            tried.append(enc)
+            exceptions.append((enc, str(e)))
+            # continue to next encoding
+    # if all failed, raise a combined error
+    err_msgs = "; ".join([f"{enc}: {msg}" for enc, msg in exceptions])
+    raise Exception(f"All encodings failed ({err_msgs})")
+
+def _normalize_status_value(val: str) -> str:
+    """
+    Normalize various status text variants to canonical values used by frontend:
+      - 'Accepted' for accepts
+      - 'Rejected' for rejects
+      - '' (empty) for pending / unknown
+    Preserve non-empty unknown values by trimming but prefer canonical mapping.
+    """
+    if val is None:
+        return ""
+    s = str(val).strip()
+    if s == "":
+        return ""
+    ls = s.lower()
+    # common accept variants
+    if ls in ("accept", "accepted", "acept", "acpt"):
+        return "Accepted"
+    if ls.startswith("accept"):
+        return "Accepted"
+    # common reject variants
+    if ls in ("reject", "rejected", "rej", "rejected "):
+        return "Rejected"
+    if ls.startswith("reject"):
+        return "Rejected"
+    # some CSVs use 'Accept' / 'Reject' exactly, map them too
+    if ls in ("accept ", "reject "):
+        return "Accepted" if "accept" in ls else "Rejected"
+    # if value is already canonical
+    if s in ("Accepted", "Rejected"):
+        return s
+    # otherwise, return trimmed original (so user can see any custom markers)
+    return s
+
 def get_session_from_request():
     """Extract and validate session token from request"""
     token = request.headers.get("X-Session-Token") or request.args.get("token")
@@ -120,7 +210,10 @@ def get_session_from_request():
         save_sessions()
     else:
         # Check if session is expired
-        expires_at = datetime.fromisoformat(session_data.get("expires_at", "2000-01-01"))
+        try:
+            expires_at = datetime.fromisoformat(session_data.get("expires_at", "2000-01-01"))
+        except Exception:
+            expires_at = datetime(2000, 1, 1)
         if datetime.now() > expires_at:
             print(f"[DEBUG] Token {token} has expired")
             csv_path = session_data.get("csv_path")
@@ -140,8 +233,10 @@ def get_session_from_request():
     csv_path = session_data.get("csv_path")
     if not csv_path or not os.path.exists(csv_path):
         print(f"[DEBUG] CSV file not found for token {token}")
-        del SESSIONS[token]
-        save_sessions()
+        # remove stale session entry if present
+        if token in SESSIONS:
+            del SESSIONS[token]
+            save_sessions()
         return None, None
     
     return token, csv_path
@@ -170,7 +265,7 @@ def upload_csv():
     print(f"[UPLOAD] saved temp upload -> {upload_path}")
     
     try:
-        df = pd.read_csv(upload_path)
+        df = _read_csv_with_fallbacks(upload_path)
     except Exception as e:
         try:
             os.remove(upload_path)
@@ -179,30 +274,65 @@ def upload_csv():
         print(f"[UPLOAD] Failed to read uploaded CSV: {e}")
         return jsonify({"error": f"Failed to read CSV: {e}"}), 400
     
-    if "link" not in df.columns:
+    # Normalize columns and ensure a link column exists
+    df, link_col = _normalize_columns_and_get_link_column(df)
+    if not link_col:
         try:
             os.remove(upload_path)
         except Exception:
             pass
-        print("[UPLOAD] CSV missing 'link' column")
-        return jsonify({"error": "'link' column not found in CSV"}), 400
-    
+        print("[UPLOAD] CSV missing 'link' column (case-insensitive search failed)")
+        return jsonify({"error": "'link' column not found in CSV (expected column named Link, link, URL, etc.)"}), 400
+
+    # Ensure link column values are strings and strip whitespace
+    df["link"] = df["link"].astype(str).str.strip()
+
+    # Remove empty links
+    before_count = len(df)
+    df = df[df["link"] != ""].reset_index(drop=True)
+    removed_empty = before_count - len(df)
+
     # Remove duplicates based on link column
     original_count = len(df)
     df = df.drop_duplicates(subset=["link"], keep="first").reset_index(drop=True)
     duplicates_removed = original_count - len(df)
     
+    # Normalize Status/Feedback column names
+    col_map = {c: c.strip() for c in df.columns}
+    if any(k != v for k, v in col_map.items()):
+        df = df.rename(columns=col_map)
+
+    # rename case-insensitive status/feedback to canonical names
+    for c in df.columns:
+        if c.lower() == "status" and c != "Status":
+            df = df.rename(columns={c: "Status"})
+        if c.lower() == "feedback" and c != "Feedback":
+            df = df.rename(columns={c: "Feedback"})
+
+    # ensure columns exist
     if "Status" not in df.columns:
         df["Status"] = ""
     if "Feedback" not in df.columns:
         df["Feedback"] = ""
-    
+
+    # Normalize status values so frontend shows Accepted/Rejected/Pending consistently
+    df["Status"] = df["Status"].apply(_normalize_status_value)
+
     # Replace NaN with empty string
     df = df.fillna("")
-    
+
     base, _ext = os.path.splitext(upload_path)
     reviewed_path = f"{base}_reviewed.csv"
-    df.to_csv(reviewed_path, index=False)
+
+    try:
+        df.to_csv(reviewed_path, index=False, encoding="utf-8")
+    except Exception as e:
+        print(f"[UPLOAD] Failed to save reviewed CSV: {e}")
+        try:
+            os.remove(upload_path)
+        except Exception:
+            pass
+        return jsonify({"error": f"Failed to save processed CSV: {e}"}), 500
     
     # Remove temporary upload file
     try:
@@ -226,12 +356,13 @@ def upload_csv():
     # Clean up old sessions periodically
     clean_expired_sessions()
     
-    print(f"[UPLOAD] token={token} -> {reviewed_path} ({len(df)} rows, {duplicates_removed} duplicates removed)")
+    print(f"[UPLOAD] token={token} -> {reviewed_path} ({len(df)} rows, {duplicates_removed} duplicates removed, {removed_empty} empty links removed)")
     
     return jsonify({
         "message": "CSV uploaded successfully",
         "total": len(df),
         "duplicates_removed": duplicates_removed,
+        "empty_links_removed": removed_empty,
         "token": token,
         "expires_in_hours": SESSION_EXPIRY_HOURS
     }), 200
@@ -265,11 +396,41 @@ def get_data():
         return jsonify({"error": "CSV file not found on server"}), 404
     
     try:
-        df = pd.read_csv(csv_path)
+        df = _read_csv_with_fallbacks(csv_path)
     except Exception as e:
         print(f"[DATA] pandas failed to read {csv_path}: {e}")
         return jsonify({"error": f"Failed to read CSV: {e}"}), 500
     
+    # Normalize columns and ensure 'link' exists for the client
+    df, link_col = _normalize_columns_and_get_link_column(df)
+    if not link_col:
+        return jsonify({"error": "'link' column missing in stored CSV"}), 500
+
+    # coerce to strings and fillna
+    df["link"] = df["link"].astype(str).str.strip()
+
+    # Normalize Status column if present, otherwise add it
+    if "Status" in df.columns:
+        df["Status"] = df["Status"].apply(_normalize_status_value)
+    else:
+        # try to find case-insensitive status
+        for c in df.columns:
+            if isinstance(c, str) and c.lower() == "status":
+                df = df.rename(columns={c: "Status"})
+                df["Status"] = df["Status"].apply(_normalize_status_value)
+                break
+        else:
+            df["Status"] = ""
+
+    if "Feedback" not in df.columns:
+        # try case-insensitive
+        for c in df.columns:
+            if isinstance(c, str) and c.lower() == "feedback":
+                df = df.rename(columns={c: "Feedback"})
+                break
+        if "Feedback" not in df.columns:
+            df["Feedback"] = ""
+
     df = df.fillna("")
     data = df.to_dict("records")
     
@@ -294,21 +455,44 @@ def update_status():
         return jsonify({"error": "Missing index or status"}), 400
     
     try:
-        df = pd.read_csv(csv_path)
+        df = _read_csv_with_fallbacks(csv_path)
     except Exception as e:
         return jsonify({"error": f"Failed to read CSV: {e}"}), 500
     
-    if not (0 <= int(index) < len(df)):
+    # Normalize and ensure link column exists
+    df, link_col = _normalize_columns_and_get_link_column(df)
+    if not link_col:
+        return jsonify({"error": "'link' column missing in stored CSV"}), 500
+
+    # guard index bounds
+    try:
+        idx = int(index)
+    except Exception:
+        return jsonify({"error": "Invalid index (must be integer)"}), 400
+
+    if not (0 <= idx < len(df)):
         return jsonify({"error": "Invalid index"}), 400
     
-    df.loc[int(index), "Status"] = status
-    df.loc[int(index), "Feedback"] = feedback if status == "Rejected" else ""
+    # Ensure Status and Feedback columns exist (case handled previously)
+    if "Status" not in df.columns:
+        df["Status"] = ""
+    if "Feedback" not in df.columns:
+        df["Feedback"] = ""
+    
+    # Normalize incoming status to canonical values
+    canonical = _normalize_status_value(status)
+    df.loc[idx, "Status"] = canonical
+    df.loc[idx, "Feedback"] = feedback if canonical == "Rejected" else ""
     
     df = df.fillna("")
-    df.to_csv(csv_path, index=False)
+    try:
+        df.to_csv(csv_path, index=False, encoding="utf-8")
+    except Exception as e:
+        print(f"[UPDATE] Failed to write CSV: {e}")
+        return jsonify({"error": f"Failed to save CSV: {e}"}), 500
     
-    print(f"[UPDATE] token={token}, index={index}, status={status}, feedback={feedback[:50] if feedback else 'none'}")
-    return jsonify({"message": f"Marked as {status}"}), 200
+    print(f"[UPDATE] token={token}, index={index}, status={canonical}, feedback={feedback[:50] if feedback else 'none'}")
+    return jsonify({"message": f"Marked as {canonical}"}), 200
 
 @app.route("/api/download", methods=["GET"])
 def download_csv():
@@ -319,13 +503,27 @@ def download_csv():
         return jsonify({"error": "No reviewed CSV available or invalid/expired token"}), 401
     
     try:
-        df = pd.read_csv(csv_path)
-        # Remove any duplicates that might have been added during review
-        df = df.drop_duplicates(subset=["link"], keep="first")
+        df = _read_csv_with_fallbacks(csv_path)
+        # Normalize column names and ensure 'link' exists
+        df, _ = _normalize_columns_and_get_link_column(df)
+
+        # Normalize status column before download
+        if "Status" in df.columns:
+            df["Status"] = df["Status"].apply(_normalize_status_value)
+        else:
+            for c in df.columns:
+                if isinstance(c, str) and c.lower() == "status":
+                    df = df.rename(columns={c: "Status"})
+                    df["Status"] = df["Status"].apply(_normalize_status_value)
+                    break
+
+        # Remove duplicates that might have been added during review
+        if "link" in df.columns:
+            df = df.drop_duplicates(subset=["link"], keep="first")
         
         # Create a temporary file for download
         temp_path = csv_path.replace(".csv", "_download.csv")
-        df.to_csv(temp_path, index=False)
+        df.to_csv(temp_path, index=False, encoding="utf-8")
         
         # Get original filename from session
         session_data = SESSIONS.get(token, {})
