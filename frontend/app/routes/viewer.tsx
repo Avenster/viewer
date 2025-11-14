@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
+import { useAuth } from "../components/AuthContext";
 
 interface DataItem {
   link?: string;
@@ -24,18 +25,23 @@ export default function Viewer() {
   const [verifierFilter, setVerifierFilter] = useState<string>("");
   const [activeVerifier, setActiveVerifier] = useState<string | null>(null);
   const [pendingOnly, setPendingOnly] = useState<boolean>(false);
-  const [feedbacks, setFeedbacks] = useState<Record<string, string>>({}); // keyed by link
+  const [feedbacks, setFeedbacks] = useState<Record<string, string>>({});
   const itemsPerPage = 5;
   const navigate = useNavigate();
+  const { user, authToken, isAuthenticated, logout } = useAuth();
 
   useEffect(() => {
+    if (!isAuthenticated) {
+      navigate("/login");
+      return;
+    }
     if (typeof window !== "undefined") {
       const t = window.localStorage.getItem("review_token");
       setToken(t);
     }
     checkSession();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [isAuthenticated]);
 
   const buildHeaders = (tokenFromStorage?: string) => {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -44,6 +50,7 @@ export default function Viewer() {
       token ??
       (typeof window !== "undefined" ? window.localStorage.getItem("review_token") : null);
     if (t) headers["X-Session-Token"] = t;
+    if (authToken) headers["X-Auth-Token"] = authToken;
     return headers;
   };
 
@@ -72,6 +79,16 @@ export default function Viewer() {
         setToken(currentToken);
         const items = await fetchData();
         setData(items);
+      } else if (response.status === 401) {
+        window.localStorage.removeItem("review_token");
+        setToken(null);
+        setNoSession(true);
+        setData([]);
+        setMessage("❌ Session expired. Please login again.");
+        setTimeout(() => {
+          logout();
+          navigate("/login");
+        }, 2000);
       } else {
         window.localStorage.removeItem("review_token");
         setToken(null);
@@ -107,8 +124,11 @@ export default function Viewer() {
         setToken(null);
         setNoSession(true);
         setData([]);
-        setMessage("❌ Session expired. Please upload CSV again.");
-        setTimeout(() => setMessage(""), 3000);
+        setMessage("❌ Session expired. Please login again.");
+        setTimeout(() => {
+          logout();
+          navigate("/login");
+        }, 2000);
         return [];
       }
       const result = await response.json().catch(() => ({}));
@@ -137,7 +157,6 @@ export default function Viewer() {
 
   const totalPages = Math.max(1, Math.ceil(data.length / itemsPerPage));
 
-  // IMPORTANT: update now uses link (unique) to identify row on server
   const updateStatus = async (link: string, status: string, providedFeedback = "") => {
     const currentToken =
       token ?? (typeof window !== "undefined" ? window.localStorage.getItem("review_token") : null);
@@ -160,11 +179,14 @@ export default function Viewer() {
       });
 
       if (response.status === 401) {
-        setMessage("❌ Session expired. Please upload CSV again.");
+        setMessage("❌ Session expired. Please login again.");
         if (typeof window !== "undefined") window.localStorage.removeItem("review_token");
         setToken(null);
         setNoSession(true);
-        setTimeout(() => setMessage(""), 3000);
+        setTimeout(() => {
+          logout();
+          navigate("/login");
+        }, 2000);
         return;
       }
 
@@ -172,7 +194,6 @@ export default function Viewer() {
         setMessage(`✅ Marked ${link} as ${status}`);
         setTimeout(() => setMessage(""), 1800);
 
-        // update local data by link (so UI stays in sync)
         setData((prev) =>
           prev.map((item) =>
             (item.link ?? "").toString().trim() === link
@@ -185,7 +206,6 @@ export default function Viewer() {
           )
         );
 
-        // clear feedback buffer for this link
         setFeedbacks((prev) => {
           const copy = { ...prev };
           delete copy[link];
@@ -219,13 +239,17 @@ export default function Viewer() {
     try {
       const response = await fetch(`${API_URL}/api/download`, {
         credentials: "omit",
-        headers: currentToken ? { "X-Session-Token": currentToken } : undefined,
+        headers: buildHeaders(currentToken),
       });
       if (response.status === 401) {
-        setMessage("❌ Session expired. Please upload CSV again.");
+        setMessage("❌ Session expired. Please login again.");
         if (typeof window !== "undefined") window.localStorage.removeItem("review_token");
         setToken(null);
         setNoSession(true);
+        setTimeout(() => {
+          logout();
+          navigate("/login");
+        }, 2000);
         return;
       }
       if (response.ok) {
@@ -278,7 +302,6 @@ export default function Viewer() {
   const togglePendingOnly = async (checked: boolean) => {
     setPendingOnly(checked);
     setPage(0);
-    // re-apply filter (with or without active verifier)
     if (activeVerifier) {
       const items = await fetchData(activeVerifier);
       const filtered = checked
@@ -300,6 +323,15 @@ export default function Viewer() {
     }
   };
 
+  const handleLogout = async () => {
+    await logout();
+    navigate("/login");
+  };
+
+  if (!isAuthenticated) {
+    return null;
+  }
+
   if (loading || sessionChecking) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center p-4">
@@ -318,7 +350,7 @@ export default function Viewer() {
           <h2 className="text-2xl font-semibold mb-2 text-white">{noSession ? "No active review session" : "No data found"}</h2>
           <p className="text-gray-400 mb-6">{noSession ? "Your session has expired or you haven't uploaded a CSV yet." : "Upload a CSV file to begin reviewing PDFs."}</p>
           <div className="flex justify-center gap-4">
-            <button type="button" onClick={() => navigate("/")} className="px-6 py-2 bg-white text-black rounded-lg hover:bg-gray-200 transition-colors font-medium">Upload CSV</button>
+            <button type="button" onClick={() => navigate("/home")} className="px-6 py-2 bg-white text-black rounded-lg hover:bg-gray-200 transition-colors font-medium">Upload CSV</button>
             {token && (
               <button type="button" onClick={() => { if (typeof window !== "undefined") window.localStorage.removeItem("review_token"); setToken(null); setNoSession(true); }} className="px-6 py-2 border border-gray-600 text-white rounded-lg hover:bg-gray-900 transition-colors">Clear Session</button>
             )}
@@ -335,10 +367,29 @@ export default function Viewer() {
   return (
     <div className="min-h-screen bg-black p-6">
       <div className="max-w-7xl mx-auto">
-        {/* Header */}
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold text-white mb-2">PDF Reviewer</h1>
-          <p className="text-gray-400">Review and manage PDF documents efficiently</p>
+        {/* Header with User Info */}
+        <div className="mb-8 flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold text-white mb-2">PDF Reviewer</h1>
+            <p className="text-gray-400">Review and manage PDF documents efficiently</p>
+          </div>
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-3 px-4 py-2 bg-gray-900 border border-gray-800 rounded-lg">
+              <div className="w-8 h-8 bg-white rounded-full flex items-center justify-center text-black font-semibold text-sm">
+                {user?.name?.charAt(0).toUpperCase()}
+              </div>
+              <div>
+                <p className="text-sm font-medium text-white">{user?.name}</p>
+                <p className="text-xs text-gray-400">@{user?.username}</p>
+              </div>
+            </div>
+            <button
+              onClick={handleLogout}
+              className="px-4 py-2 text-sm text-gray-400 hover:text-white transition-colors"
+            >
+              Logout
+            </button>
+          </div>
         </div>
 
         {/* Filter Controls */}
@@ -381,7 +432,7 @@ export default function Viewer() {
             <div className="flex gap-2">
               <button 
                 type="button" 
-                onClick={() => navigate("/")} 
+                onClick={() => navigate("/home")} 
                 className="px-4 py-2 border border-gray-700 text-white rounded-lg text-sm hover:bg-gray-800 transition-colors"
               >
                 ← Back
@@ -453,7 +504,6 @@ export default function Viewer() {
                 key={link || absoluteIndex} 
                 className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden hover:border-gray-700 transition-colors"
               >
-                {/* Card Header */}
                 <div className="p-4 bg-black border-b border-gray-800 flex items-center justify-between">
                   <span className="text-sm text-gray-400">PDF #{absoluteIndex + 1}</span>
                   <span 
@@ -469,7 +519,6 @@ export default function Viewer() {
                   </span>
                 </div>
 
-                {/* PDF Preview */}
                 <div className="h-56 bg-white">
                   <iframe 
                     src={viewerSrc} 
@@ -479,9 +528,7 @@ export default function Viewer() {
                   />
                 </div>
 
-                {/* Card Content */}
                 <div className="p-4">
-                  {/* Link */}
                   <a 
                     href={link} 
                     target="_blank" 
@@ -492,14 +539,12 @@ export default function Viewer() {
                     Open original PDF →
                   </a>
 
-                  {/* Verified By */}
                   {verifierName && (
                     <div className="mb-4 text-xs text-gray-400">
                       Verified By: <span className="text-white font-medium">{verifierName}</span>
                     </div>
                   )}
 
-                  {/* Action Buttons */}
                   <div className="flex gap-2 mb-4">
                     <button 
                       type="button" 
@@ -525,7 +570,6 @@ export default function Viewer() {
                     </button>
                   </div>
 
-                  {/* Feedback Section */}
                   <div>
                     <label className="block text-xs text-gray-400 mb-2 font-medium">
                       Rejection Reason {isRejected && "(Required)"}

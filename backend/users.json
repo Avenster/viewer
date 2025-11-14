@@ -1,0 +1,13 @@
+{
+  "2ddde41fe1754da5b2e50decf4d8d2bc": {
+    "user_id": "2ddde41fe1754da5b2e50decf4d8d2bc",
+    "username": "nss",
+    "email": "ns@gmail.com",
+    "name": "Nikhil",
+    "password_hash": "27b5d4f9d585796a0f2276a6a64d79dba8dd70f395b61a76dae438f0e7675f72",
+    "auth_token": "298275af08e14abc9ac8c7042491ea6c",
+    "token_expires_at": "2025-12-14T14:30:38.451273",
+    "created_at": "2025-11-14T14:30:38.451291",
+    "upload_sessions": []
+  }
+}
