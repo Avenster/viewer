@@ -17,7 +17,7 @@ app = Flask(__name__)
 UPLOAD_FOLDER = os.environ.get("UPLOAD_FOLDER", "uploads")
 SESSIONS_FILE = os.environ.get("SESSIONS_FILE", "sessions.json")
 SESSION_EXPIRY_HOURS = int(os.environ.get("SESSION_EXPIRY_HOURS", "24"))
-FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://13.201.123.132:3000")
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
