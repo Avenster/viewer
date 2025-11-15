@@ -1,99 +1,138 @@
 import React, { useState, useEffect } from "react";
-import { useNavigate } from "react-router";
-import { useAuth } from "../components/AuthContext";
+import { useNavigate, Link } from "react-router";
+
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
 
 export default function Login() {
-  const [isLogin, setIsLogin] = useState(true);
-  const [username, setUsername] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [name, setName] = useState("");
+  const [isSignup, setIsSignup] = useState(false);
+  const [formData, setFormData] = useState({
+    username: "",
+    email: "",
+    password: "",
+    name: ""
+  });
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
-
   const navigate = useNavigate();
-  const { login, signup, isAuthenticated } = useAuth();
 
+  // Check authentication on mount
   useEffect(() => {
-    if (isAuthenticated) {
-      navigate("/home");
-    }
-  }, [isAuthenticated, navigate]);
+    const checkAuth = async () => {
+      const token = localStorage.getItem("auth_token");
+      
+      if (!token) {
+        setLoading(false);
+        return;
+      }
+
+      try {
+        const response = await fetch(`${API_URL}/api/auth/verify`, {
+          headers: { "X-Auth-Token": token }
+        });
+
+        if (response.ok) {
+          // User is already authenticated, redirect immediately
+          console.log("[LOGIN] User already authenticated, redirecting to dashboard");
+          navigate("/dashboard", { replace: true });
+        } else {
+          // Token invalid, clear it
+          localStorage.removeItem("auth_token");
+          setLoading(false);
+        }
+      } catch (error) {
+        console.error("Auth check failed:", error);
+        localStorage.removeItem("auth_token");
+        setLoading(false);
+      }
+    };
+
+    checkAuth();
+  }, [navigate]);
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setFormData({
+      ...formData,
+      [e.target.name]: e.target.value
+    });
+    setError("");
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setSubmitting(true);
     setError("");
-    setLoading(true);
+
+    const endpoint = isSignup ? '/api/auth/signup' : '/api/auth/login';
+    const payload = isSignup 
+      ? formData 
+      : { username: formData.username, password: formData.password };
+
+    const token = localStorage.getItem("auth_token");
 
     try {
-      if (isLogin) {
-        const result = await login(username, password);
-        if (result.success) {
-          navigate("/home");
-        } else {
-          setError(result.error || "Login failed");
-        }
+      const response = await fetch(`${API_URL}${endpoint}`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          ...(token && { 'X-Auth-Token': token })
+        },
+        body: JSON.stringify(payload)
+      });
+
+      const data = await response.json();
+
+      // Handle already authenticated (403 from backend middleware)
+      if (response.status === 403 && data.code === 'ALREADY_AUTHENTICATED') {
+        console.log("[LOGIN] Already authenticated, redirecting");
+        navigate("/dashboard", { replace: true });
+        return;
+      }
+
+      if (response.ok && data.success) {
+        // Save auth token
+        localStorage.setItem("auth_token", data.token);
+        
+        // Redirect to dashboard (replace: true prevents back button issue)
+        navigate("/dashboard", { replace: true });
       } else {
-        if (!email || !name) {
-          setError("All fields are required");
-          setLoading(false);
-          return;
-        }
-        const result = await signup(username, email, password, name);
-        if (result.success) {
-          navigate("/home");
-        } else {
-          setError(result.error || "Signup failed");
-        }
+        setError(data.error || "Authentication failed");
+        setSubmitting(false);
       }
     } catch (err) {
-      setError("An unexpected error occurred");
-    } finally {
-      setLoading(false);
+      console.error(err);
+      setError("Connection failed. Please try again.");
+      setSubmitting(false);
     }
   };
 
+  // Show loading screen while checking auth
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-black flex items-center justify-center">
+        <div className="text-white text-xl">Checking authentication...</div>
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen bg-black flex items-center justify-center p-4">
+    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-black flex items-center justify-center p-4">
       <div className="w-full max-w-md">
+        {/* Logo/Title */}
         <div className="text-center mb-8">
           <h1 className="text-4xl font-bold text-white mb-2">PDF Reviewer</h1>
-          <p className="text-gray-400">
-            {isLogin ? "Sign in to continue" : "Create your account"}
-          </p>
+          <p className="text-gray-400">Streamline your PDF review workflow</p>
         </div>
 
-        <div className="bg-gray-900 border border-gray-800 rounded-lg p-8">
-          {/* Tab Switcher */}
-          <div className="flex gap-2 mb-6">
-            <button
-              type="button"
-              onClick={() => {
-                setIsLogin(true);
-                setError("");
-              }}
-              className={`flex-1 py-2 px-4 rounded-lg font-medium transition-colors ${
-                isLogin
-                  ? "bg-white text-black"
-                  : "bg-gray-800 text-gray-400 hover:bg-gray-700"
-              }`}
-            >
-              Login
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setIsLogin(false);
-                setError("");
-              }}
-              className={`flex-1 py-2 px-4 rounded-lg font-medium transition-colors ${
-                !isLogin
-                  ? "bg-white text-black"
-                  : "bg-gray-800 text-gray-400 hover:bg-gray-700"
-              }`}
-            >
-              Sign Up
-            </button>
+        {/* Auth Card */}
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-2xl p-8 shadow-xl">
+          <div className="mb-6">
+            <h2 className="text-2xl font-semibold text-white mb-2">
+              {isSignup ? "Create Account" : "Welcome Back"}
+            </h2>
+            <p className="text-gray-400 text-sm">
+              {isSignup ? "Sign up to get started" : "Log in to continue"}
+            </p>
           </div>
 
           {error && (
@@ -103,51 +142,54 @@ export default function Login() {
           )}
 
           <form onSubmit={handleSubmit} className="space-y-4">
-            {!isLogin && (
+            {isSignup && (
               <div>
                 <label className="block text-sm font-medium text-gray-300 mb-2">
                   Full Name
                 </label>
                 <input
                   type="text"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-black border border-gray-700 rounded-lg text-white focus:outline-none focus:border-gray-500 transition-colors"
+                  name="name"
+                  value={formData.name}
+                  onChange={handleChange}
+                  required={isSignup}
+                  className="w-full px-4 py-3 bg-gray-900/50 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
                   placeholder="John Doe"
-                  required={!isLogin}
                 />
               </div>
             )}
 
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-2">
-                Username {isLogin && "or Email"}
-              </label>
-              <input
-                type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                className="w-full px-4 py-2.5 bg-black border border-gray-700 rounded-lg text-white focus:outline-none focus:border-gray-500 transition-colors"
-                placeholder={isLogin ? "username or email" : "username"}
-                required
-              />
-            </div>
-
-            {!isLogin && (
+            {isSignup && (
               <div>
                 <label className="block text-sm font-medium text-gray-300 mb-2">
                   Email
                 </label>
                 <input
                   type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-black border border-gray-700 rounded-lg text-white focus:outline-none focus:border-gray-500 transition-colors"
-                  placeholder="you@example.com"
-                  required={!isLogin}
+                  name="email"
+                  value={formData.email}
+                  onChange={handleChange}
+                  required={isSignup}
+                  className="w-full px-4 py-3 bg-gray-900/50 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
+                  placeholder="john@example.com"
                 />
               </div>
             )}
+
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-2">
+                {isSignup ? "Username" : "Username or Email"}
+              </label>
+              <input
+                type="text"
+                name="username"
+                value={formData.username}
+                onChange={handleChange}
+                required
+                className="w-full px-4 py-3 bg-gray-900/50 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
+                placeholder={isSignup ? "johndoe" : "johndoe or john@example.com"}
+              />
+            </div>
 
             <div>
               <label className="block text-sm font-medium text-gray-300 mb-2">
@@ -155,61 +197,59 @@ export default function Login() {
               </label>
               <input
                 type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full px-4 py-2.5 bg-black border border-gray-700 rounded-lg text-white focus:outline-none focus:border-gray-500 transition-colors"
-                placeholder="••••••••"
+                name="password"
+                value={formData.password}
+                onChange={handleChange}
                 required
                 minLength={6}
+                className="w-full px-4 py-3 bg-gray-900/50 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
+                placeholder="••••••••"
               />
+              {isSignup && (
+                <p className="mt-1 text-xs text-gray-500">
+                  Minimum 6 characters
+                </p>
+              )}
             </div>
 
             <button
               type="submit"
-              disabled={loading}
-              className="w-full py-3 bg-white text-black rounded-lg font-medium hover:bg-gray-200 disabled:bg-gray-700 disabled:text-gray-400 disabled:cursor-not-allowed transition-colors"
+              disabled={submitting}
+              className="w-full py-3 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white rounded-lg font-semibold disabled:from-gray-700 disabled:to-gray-700 disabled:cursor-not-allowed transition-all duration-300 shadow-lg"
             >
-              {loading ? "Please wait..." : isLogin ? "Sign In" : "Create Account"}
+              {submitting ? "Processing..." : (isSignup ? "Sign Up" : "Log In")}
             </button>
           </form>
 
-          <div className="mt-6 text-center text-sm text-gray-400">
-            {isLogin ? (
-              <p>
-                Don't have an account?{" "}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsLogin(false);
-                    setError("");
-                  }}
-                  className="text-white hover:underline"
-                >
-                  Sign up
-                </button>
-              </p>
-            ) : (
-              <p>
-                Already have an account?{" "}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsLogin(true);
-                    setError("");
-                  }}
-                  className="text-white hover:underline"
-                >
-                  Sign in
-                </button>
-              </p>
-            )}
+          <div className="mt-6 text-center">
+            <button
+              onClick={() => {
+                setIsSignup(!isSignup);
+                setError("");
+                setFormData({ username: "", email: "", password: "", name: "" });
+              }}
+              className="text-sm text-gray-400 hover:text-white transition-colors"
+            >
+              {isSignup ? (
+                <>Already have an account? <span className="text-blue-400 font-semibold">Log in</span></>
+              ) : (
+                <>Don't have an account? <span className="text-blue-400 font-semibold">Sign up</span></>
+              )}
+            </button>
+          </div>
+
+          <div className="mt-6 pt-6 border-t border-gray-700">
+            <Link
+              to="/admin/login"
+              className="block text-center text-sm text-gray-400 hover:text-white transition-colors"
+            >
+              🔐 Admin Login
+            </Link>
           </div>
         </div>
 
-        <div className="mt-6 text-center text-xs text-gray-500">
-          <p>
-            By continuing, you agree to our Terms of Service and Privacy Policy
-          </p>
+        <div className="mt-6 text-center text-sm text-gray-500">
+          <p>© 2025 PDF Reviewer. All rights reserved.</p>
         </div>
       </div>
     </div>
