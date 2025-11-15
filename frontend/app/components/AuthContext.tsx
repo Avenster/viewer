@@ -1,9 +1,8 @@
-import React, { createContext, useContext, useState, useEffect } from "react";
+import { createContext, useContext, useState, useEffect, type ReactNode } from "react";
 
-const API_URL = (import.meta.env.VITE_API_URL as string) || "http://localhost:5000";
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
 
 interface User {
-  user_id: string;
   username: string;
   email: string;
   name: string;
@@ -12,67 +11,76 @@ interface User {
 interface AuthContextType {
   user: User | null;
   authToken: string | null;
-  loading: boolean;
+  isAuthenticated: boolean;
   login: (username: string, password: string) => Promise<{ success: boolean; error?: string }>;
   signup: (username: string, email: string, password: string, name: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => Promise<void>;
-  isAuthenticated: boolean;
+  setUser: (user: User | null) => void;
+  setAuthToken: (token: string | null) => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-export const useAuth = () => {
-  const context = useContext(AuthContext);
-  if (!context) {
-    throw new Error("useAuth must be used within AuthProvider");
-  }
-  return context;
-};
-
-export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [authToken, setAuthToken] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
 
+  // Load auth token and user from localStorage on mount
   useEffect(() => {
-    // Check if user is already logged in
-    const token = localStorage.getItem("auth_token");
-    if (token) {
-      verifyToken(token);
-    } else {
-      setLoading(false);
-    }
-  }, []);
+    const loadAuth = async () => {
+      try {
+        const storedToken = localStorage.getItem("auth_token");
+        const storedUser = localStorage.getItem("user");
 
-  const verifyToken = async (token: string) => {
-    try {
-      const response = await fetch(`${API_URL}/api/auth/verify`, {
-        headers: {
-          "X-Auth-Token": token,
-        },
-      });
+        console.log("[AuthContext] Loading from localStorage:");
+        console.log("- Token:", storedToken ? "Present" : "Missing");
+        console.log("- User:", storedUser ? "Present" : "Missing");
 
-      if (response.ok) {
-        const data = await response.json();
-        setUser(data.user);
-        setAuthToken(token);
-      } else {
+        if (storedToken && storedUser) {
+          // Verify token is still valid
+          const response = await fetch(`${API_URL}/api/auth/verify`, {
+            headers: {
+              "X-Auth-Token": storedToken,
+            },
+          });
+
+          if (response.ok) {
+            const data = await response.json();
+            setAuthToken(storedToken);
+            setUser(JSON.parse(storedUser));
+            setIsAuthenticated(true);
+            console.log("[AuthContext] ✅ Auth restored from localStorage");
+          } else {
+            // Token expired or invalid
+            console.log("[AuthContext] ❌ Token expired, clearing localStorage");
+            localStorage.removeItem("auth_token");
+            localStorage.removeItem("user");
+            setAuthToken(null);
+            setUser(null);
+            setIsAuthenticated(false);
+          }
+        }
+      } catch (error) {
+        console.error("[AuthContext] Error loading auth:", error);
         localStorage.removeItem("auth_token");
+        localStorage.removeItem("user");
         setAuthToken(null);
         setUser(null);
+        setIsAuthenticated(false);
+      } finally {
+        setIsLoading(false);
       }
-    } catch (error) {
-      console.error("Token verification failed:", error);
-      localStorage.removeItem("auth_token");
-      setAuthToken(null);
-      setUser(null);
-    } finally {
-      setLoading(false);
-    }
-  };
+    };
+
+    loadAuth();
+  }, []);
 
   const login = async (username: string, password: string) => {
     try {
+      console.log("[AuthContext] Login attempt for:", username);
+
       const response = await fetch(`${API_URL}/api/auth/login`, {
         method: "POST",
         headers: {
@@ -83,22 +91,33 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       const data = await response.json();
 
-      if (response.ok) {
-        localStorage.setItem("auth_token", data.auth_token);
-        setAuthToken(data.auth_token);
+      if (response.ok && data.success) {
+        console.log("[AuthContext] ✅ Login successful");
+        
+        // Store in localStorage
+        localStorage.setItem("auth_token", data.token);
+        localStorage.setItem("user", JSON.stringify(data.user));
+
+        // Update state
+        setAuthToken(data.token);
         setUser(data.user);
+        setIsAuthenticated(true);
+
         return { success: true };
       } else {
+        console.log("[AuthContext] ❌ Login failed:", data.error);
         return { success: false, error: data.error || "Login failed" };
       }
     } catch (error) {
-      console.error("Login error:", error);
+      console.error("[AuthContext] Login error:", error);
       return { success: false, error: "Network error. Please try again." };
     }
   };
 
   const signup = async (username: string, email: string, password: string, name: string) => {
     try {
+      console.log("[AuthContext] Signup attempt for:", username);
+
       const response = await fetch(`${API_URL}/api/auth/signup`, {
         method: "POST",
         headers: {
@@ -109,22 +128,34 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       const data = await response.json();
 
-      if (response.ok) {
-        localStorage.setItem("auth_token", data.auth_token);
-        setAuthToken(data.auth_token);
+      if (response.ok && data.success) {
+        console.log("[AuthContext] ✅ Signup successful");
+        
+        // Store in localStorage
+        localStorage.setItem("auth_token", data.token);
+        localStorage.setItem("user", JSON.stringify(data.user));
+
+        // Update state
+        setAuthToken(data.token);
         setUser(data.user);
+        setIsAuthenticated(true);
+
         return { success: true };
       } else {
+        console.log("[AuthContext] ❌ Signup failed:", data.error);
         return { success: false, error: data.error || "Signup failed" };
       }
     } catch (error) {
-      console.error("Signup error:", error);
+      console.error("[AuthContext] Signup error:", error);
       return { success: false, error: "Network error. Please try again." };
     }
   };
 
   const logout = async () => {
     try {
+      console.log("[AuthContext] Logging out...");
+
+      // Call backend logout endpoint
       if (authToken) {
         await fetch(`${API_URL}/api/auth/logout`, {
           method: "POST",
@@ -133,29 +164,54 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           },
         });
       }
-    } catch (error) {
-      console.error("Logout error:", error);
-    } finally {
+
+      // Clear localStorage
       localStorage.removeItem("auth_token");
+      localStorage.removeItem("user");
       localStorage.removeItem("review_token");
+
+      // Clear state
       setAuthToken(null);
       setUser(null);
+      setIsAuthenticated(false);
+
+      console.log("[AuthContext] ✅ Logged out successfully");
+    } catch (error) {
+      console.error("[AuthContext] Logout error:", error);
     }
   };
+
+  // Don't render children until auth state is loaded
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center">
+        <div className="text-white text-xl">Loading...</div>
+      </div>
+    );
+  }
 
   return (
     <AuthContext.Provider
       value={{
         user,
         authToken,
-        loading,
+        isAuthenticated,
         login,
         signup,
         logout,
-        isAuthenticated: !!user,
+        setUser,
+        setAuthToken,
       }}
     >
       {children}
     </AuthContext.Provider>
   );
-};
+}
+
+export function useAuth() {
+  const context = useContext(AuthContext);
+  if (context === undefined) {
+    throw new Error("useAuth must be used within an AuthProvider");
+  }
+  return context;
+}
