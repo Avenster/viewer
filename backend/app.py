@@ -19,7 +19,7 @@ app = Flask(__name__)
 # ==========================
 CORS(app, resources={
     r"/api/*": {
-        "origins": ["http://localhost:5173", "http://localhost:3000"],
+        "origins": ["http://localhost:5173", "http://13.201.123.132:3000/"],
         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         "allow_headers": ["Content-Type", "X-Session-Token", "X-Auth-Token", "X-Admin-Token"],
         "supports_credentials": False,
