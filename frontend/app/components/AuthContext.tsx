@@ -1,8 +1,9 @@
 import { createContext, useContext, useState, useEffect, type ReactNode } from "react";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://13.201.123.132:5000";
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
 
 interface User {
+  user_id?: string;  // ✅ FIXED: Added user_id
   username: string;
   email: string;
   name: string;
@@ -38,7 +39,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         console.log("- Token:", storedToken ? "Present" : "Missing");
         console.log("- User:", storedUser ? "Present" : "Missing");
 
-        if (storedToken && storedUser) {
+        if (storedToken) {  // ✅ FIXED: Only check for token, user data comes from backend
           // Verify token is still valid
           const response = await fetch(`${API_URL}/api/auth/verify`, {
             headers: {
@@ -49,9 +50,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           if (response.ok) {
             const data = await response.json();
             setAuthToken(storedToken);
-            setUser(JSON.parse(storedUser));
+            // ✅ FIXED: Always use user data from backend response
+            const userData = data.user;
+            setUser(userData);
+            // ✅ FIXED: Update localStorage with fresh user data
+            localStorage.setItem("user", JSON.stringify(userData));
             setIsAuthenticated(true);
-            console.log("[AuthContext] ✅ Auth restored from localStorage");
+            console.log("[AuthContext] ✅ Auth restored from token verification");
+            console.log("[AuthContext] User data:", userData);
           } else {
             // Token expired or invalid
             console.log("[AuthContext] ❌ Token expired, clearing localStorage");
@@ -61,6 +67,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             setUser(null);
             setIsAuthenticated(false);
           }
+        } else {
+          // No token found
+          localStorage.removeItem("user");
+          setAuthToken(null);
+          setUser(null);
+          setIsAuthenticated(false);
         }
       } catch (error) {
         console.error("[AuthContext] Error loading auth:", error);
@@ -93,6 +105,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       if (response.ok && data.success) {
         console.log("[AuthContext] ✅ Login successful");
+        console.log("[AuthContext] User data received:", data.user);
         
         // Store in localStorage
         localStorage.setItem("auth_token", data.token);
@@ -130,6 +143,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       if (response.ok && data.success) {
         console.log("[AuthContext] ✅ Signup successful");
+        console.log("[AuthContext] User data received:", data.user);
         
         // Store in localStorage
         localStorage.setItem("auth_token", data.token);

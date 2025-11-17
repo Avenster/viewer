@@ -15,7 +15,7 @@ from functools import wraps
 app = Flask(__name__)
 
 # ==========================
-# CONFIGURATION
+# CONFIGURATION - SIMPLIFIED CORS
 # ==========================
 CORS(app, resources={
     r"/api/*": {
@@ -26,19 +26,20 @@ CORS(app, resources={
         "expose_headers": ["X-Already-Authenticated"]
     }
 })
-
 UPLOAD_FOLDER = 'uploads'
 ALLOWED_EXTENSIONS = {'csv'}
-SESSION_TIMEOUT = timedelta(hours=24)
-AUTH_TOKEN_TIMEOUT = timedelta(hours=24)
-ADMIN_TOKEN_TIMEOUT = timedelta(hours=24)
+
+# ✅ Sessions and tokens NEVER expire (100 years)
+SESSION_TIMEOUT = timedelta(days=36500)  # ~100 years - NEVER EXPIRES
+AUTH_TOKEN_TIMEOUT = timedelta(days=36500)  # ~100 years - NEVER EXPIRES
+ADMIN_TOKEN_TIMEOUT = timedelta(days=1)  # Admin expires after 1 day for security
 
 # File paths
 SESSIONS_FILE = "sessions.json"
 USERS_FILE = "users.json"
 ADMIN_CREDENTIALS_FILE = "admin_credentials.json"
 WORK_ASSIGNMENTS_FILE = "work_assignments.json"
-GLOBAL_LINKS_FILE = "global_links.json"  # NEW: Global duplicate tracking
+GLOBAL_LINKS_FILE = "global_links.json"
 
 # Create upload folder if it doesn't exist
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -51,14 +52,14 @@ USERS = {}
 AUTH_TOKENS = {}
 ADMIN_TOKENS = {}
 WORK_ASSIGNMENTS = {}
-GLOBAL_LINKS = {}  # NEW: { "pdf_link_url": {"first_uploaded_by": "username", "first_uploaded_at": "timestamp", "count": 1} }
+GLOBAL_LINKS = {}
 
 # ==========================
 # AUTHENTICATION DECORATORS
 # ==========================
 
 def require_auth(f):
-    """Decorator to require user authentication"""
+    """Decorator to require user authentication - NEVER EXPIRES"""
     @wraps(f)
     def decorated_function(*args, **kwargs):
         auth_token = request.headers.get('X-Auth-Token')
@@ -67,11 +68,10 @@ def require_auth(f):
             return jsonify({"error": "Unauthorized", "code": "AUTH_REQUIRED"}), 401
         
         token_data = AUTH_TOKENS[auth_token]
-        expires_at = datetime.fromisoformat(token_data['expires_at'])
         
-        if datetime.now() > expires_at:
-            del AUTH_TOKENS[auth_token]
-            return jsonify({"error": "Token expired", "code": "TOKEN_EXPIRED"}), 401
+        # ✅ No expiration check - tokens never expire
+        # Just update last_used timestamp
+        AUTH_TOKENS[auth_token]['last_used'] = datetime.now().isoformat()
         
         request.user = token_data
         return f(*args, **kwargs)
@@ -94,30 +94,32 @@ def require_admin(f):
             del ADMIN_TOKENS[admin_token]
             return jsonify({"error": "Token expired", "code": "TOKEN_EXPIRED"}), 401
         
+        # Auto-extend admin token
+        ADMIN_TOKENS[admin_token]['expires_at'] = (datetime.now() + ADMIN_TOKEN_TIMEOUT).isoformat()
+        
         return f(*args, **kwargs)
     
     return decorated_function
 
 def check_already_authenticated(f):
-    """Decorator to check if user is already authenticated (for login/signup routes)"""
+    """Decorator to check if user is already authenticated"""
     @wraps(f)
     def decorated_function(*args, **kwargs):
         auth_token = request.headers.get('X-Auth-Token')
         
         if auth_token and auth_token in AUTH_TOKENS:
             token_data = AUTH_TOKENS[auth_token]
-            expires_at = datetime.fromisoformat(token_data.get('expires_at', datetime.min.isoformat()))
-            
-            if datetime.now() <= expires_at:
-                return jsonify({
-                    "error": "Already authenticated",
-                    "code": "ALREADY_AUTHENTICATED",
-                    "user": {
-                        "username": token_data['username'],
-                        "email": token_data['email'],
-                        "name": token_data['name']
-                    }
-                }), 403
+            # ✅ No expiration check - tokens never expire
+            return jsonify({
+                "error": "Already authenticated",
+                "code": "ALREADY_AUTHENTICATED",
+                "user": {
+                    "user_id": token_data.get('user_id'),
+                    "username": token_data['username'],
+                    "email": token_data['email'],
+                    "name": token_data['name']
+                }
+            }), 403
         
         return f(*args, **kwargs)
     
@@ -175,18 +177,17 @@ def check_global_duplicates(links_list):
     """Check which links are duplicates globally and return detailed info"""
     global GLOBAL_LINKS
     
-    within_file_dupes = []  # Duplicates within the current file
-    global_dupes = []  # Links that already exist in global database
-    new_links = []  # Brand new links
+    within_file_dupes = []
+    global_dupes = []
+    new_links = []
     
-    seen_in_current = {}  # Track what we've seen in current upload
+    seen_in_current = {}
     
     for link in links_list:
         link_clean = str(link).strip()
         if not link_clean:
             continue
         
-        # Check if duplicate within current file
         if link_clean in seen_in_current:
             within_file_dupes.append({
                 "link": link_clean,
@@ -196,7 +197,6 @@ def check_global_duplicates(links_list):
         
         seen_in_current[link_clean] = True
         
-        # Check if exists in global database
         if link_clean in GLOBAL_LINKS:
             global_dupes.append({
                 "link": link_clean,
@@ -229,12 +229,10 @@ def register_links_globally(links, username):
             continue
         
         if link_clean in GLOBAL_LINKS:
-            # Update existing entry
             GLOBAL_LINKS[link_clean]['upload_count'] += 1
             GLOBAL_LINKS[link_clean]['last_uploaded_by'] = username
             GLOBAL_LINKS[link_clean]['last_uploaded_at'] = datetime.now().isoformat()
         else:
-            # New entry
             GLOBAL_LINKS[link_clean] = {
                 "first_uploaded_by": username,
                 "first_uploaded_at": datetime.now().isoformat(),
@@ -322,42 +320,15 @@ def load_work_assignments():
         print(f"[WORK] No existing work assignments file found")
 
 def cleanup_expired_sessions():
-    """Remove expired sessions"""
-    global SESSIONS
-    now = datetime.now()
-    expired = []
-    
-    for token, session in list(SESSIONS.items()):
-        expires_at = datetime.fromisoformat(session.get('expires_at', datetime.min.isoformat()))
-        if now > expires_at:
-            expired.append(token)
-    
-    for token in expired:
-        del SESSIONS[token]
-    
-    if expired:
-        print(f"[CLEANUP] Removed {len(expired)} expired sessions")
-        save_sessions()
+    """DISABLED - Sessions never expire"""
+    print(f"[CLEANUP] Session cleanup disabled - sessions never expire")
 
 def cleanup_expired_auth_tokens():
-    """Remove expired auth tokens"""
-    global AUTH_TOKENS
-    now = datetime.now()
-    expired = []
-    
-    for token, data in list(AUTH_TOKENS.items()):
-        expires_at = datetime.fromisoformat(data.get('expires_at', datetime.min.isoformat()))
-        if now > expires_at:
-            expired.append(token)
-    
-    for token in expired:
-        del AUTH_TOKENS[token]
-    
-    if expired:
-        print(f"[CLEANUP] Removed {len(expired)} expired auth tokens")
+    """DISABLED - Auth tokens never expire"""
+    print(f"[CLEANUP] Auth token cleanup disabled - tokens never expire")
 
 def cleanup_expired_admin_tokens():
-    """Remove expired admin tokens"""
+    """Remove expired admin tokens only"""
     global ADMIN_TOKENS
     now = datetime.now()
     expired = []
@@ -400,11 +371,9 @@ init_admin()
 load_users()
 load_sessions()
 load_work_assignments()
-load_global_links()  # NEW: Load global duplicate tracking
+load_global_links()
 
-cleanup_expired_sessions()
-cleanup_expired_auth_tokens()
-cleanup_expired_admin_tokens()
+cleanup_expired_admin_tokens()  # Only clean admin tokens
 
 print("="*60)
 
@@ -418,7 +387,7 @@ def cleanup():
     save_sessions()
     save_users()
     save_work_assignments()
-    save_global_links()  # NEW: Save global links
+    save_global_links()
     print("[SHUTDOWN] ✅ Cleanup complete")
 
 atexit.register(cleanup)
@@ -430,7 +399,7 @@ atexit.register(cleanup)
 @app.route('/api/auth/signup', methods=['POST'])
 @check_already_authenticated
 def signup():
-    """User signup endpoint"""
+    """User signup endpoint - ✅ Returns user_id"""
     try:
         data = request.json
         username = data.get('username', '').strip()
@@ -456,8 +425,12 @@ def signup():
             "email": email,
             "password_hash": generate_password_hash(password),
             "name": name,
-            "created_at": datetime.now().isoformat()
+            "created_at": datetime.now().isoformat(),
+            "is_active": True
         }
+        
+        # ✅ Immediately save users to file
+        save_users()
         
         auth_token = generate_token()
         AUTH_TOKENS[auth_token] = {
@@ -466,17 +439,18 @@ def signup():
             "email": email,
             "name": name,
             "created_at": datetime.now().isoformat(),
-            "expires_at": (datetime.now() + AUTH_TOKEN_TIMEOUT).isoformat()
+            "expires_at": (datetime.now() + AUTH_TOKEN_TIMEOUT).isoformat(),
+            "last_used": datetime.now().isoformat()
         }
         
-        save_users()
-        
-        print(f"[SIGNUP] ✅ New user created: {username} ({email})")
+        print(f"[SIGNUP] ✅ New user created: {username} ({email}) - ID: {user_id}")
+        print(f"[SIGNUP] 📊 Total users now: {len(USERS)}")
         
         return jsonify({
             "success": True,
             "token": auth_token,
             "user": {
+                "user_id": user_id,
                 "username": username,
                 "email": email,
                 "name": name
@@ -485,12 +459,14 @@ def signup():
         
     except Exception as e:
         print(f"[SIGNUP ERROR] ❌ {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": "Signup failed"}), 500
 
 @app.route('/api/auth/login', methods=['POST'])
 @check_already_authenticated
 def login():
-    """User login endpoint"""
+    """User login endpoint - ✅ Returns user_id"""
     try:
         data = request.json
         username_or_email = data.get('username', '').strip()
@@ -512,6 +488,9 @@ def login():
         if not user_found:
             return jsonify({"error": "Invalid credentials"}), 401
         
+        if not user_found.get('is_active', True):
+            return jsonify({"error": "Account is deactivated"}), 403
+        
         auth_token = generate_token()
         AUTH_TOKENS[auth_token] = {
             "user_id": user_id_found,
@@ -519,7 +498,8 @@ def login():
             "email": user_found['email'],
             "name": user_found['name'],
             "created_at": datetime.now().isoformat(),
-            "expires_at": (datetime.now() + AUTH_TOKEN_TIMEOUT).isoformat()
+            "expires_at": (datetime.now() + AUTH_TOKEN_TIMEOUT).isoformat(),
+            "last_used": datetime.now().isoformat()
         }
         
         print(f"[LOGIN] ✅ User logged in: {user_found['username']}")
@@ -528,6 +508,7 @@ def login():
             "success": True,
             "token": auth_token,
             "user": {
+                "user_id": user_id_found,
                 "username": user_found['username'],
                 "email": user_found['email'],
                 "name": user_found['name']
@@ -536,6 +517,8 @@ def login():
         
     except Exception as e:
         print(f"[LOGIN ERROR] ❌ {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": "Login failed"}), 500
 
 @app.route('/api/auth/logout', methods=['POST'])
@@ -558,7 +541,7 @@ def logout():
 
 @app.route('/api/auth/verify', methods=['GET'])
 def verify_auth():
-    """Verify auth token"""
+    """Verify auth token - ✅ Returns user_id, NEVER EXPIRES"""
     try:
         auth_token = request.headers.get('X-Auth-Token')
         
@@ -566,15 +549,15 @@ def verify_auth():
             return jsonify({"error": "Invalid token", "code": "INVALID_TOKEN"}), 401
         
         token_data = AUTH_TOKENS[auth_token]
-        expires_at = datetime.fromisoformat(token_data['expires_at'])
         
-        if datetime.now() > expires_at:
-            del AUTH_TOKENS[auth_token]
-            return jsonify({"error": "Token expired", "code": "TOKEN_EXPIRED"}), 401
+        # ✅ No expiration check - tokens never expire
+        # Just update last_used
+        AUTH_TOKENS[auth_token]['last_used'] = datetime.now().isoformat()
         
         return jsonify({
             "success": True,
             "user": {
+                "user_id": token_data.get('user_id'),
                 "username": token_data['username'],
                 "email": token_data['email'],
                 "name": token_data['name']
@@ -624,27 +607,38 @@ def admin_login():
 @app.route('/api/admin/users', methods=['GET'])
 @require_admin
 def get_users_list():
-    """Get list of all users for assignment dropdown"""
+    """Get list of all users for assignment dropdown - ✅ Reloads users from file"""
     try:
+        # ✅ Reload users from file to ensure fresh data
+        load_users()
+        
         users_list = []
         for user_id, user in USERS.items():
-            users_list.append({
-                "id": user_id,
-                "username": user['username'],
-                "name": user['name'],
-                "email": user['email']
-            })
+            if user.get('is_active', True):
+                users_list.append({
+                    "id": user_id,
+                    "username": user['username'],
+                    "name": user['name'],
+                    "email": user['email'],
+                    "created_at": user.get('created_at', '')
+                })
+        
+        users_list.sort(key=lambda x: x.get('created_at', ''), reverse=True)
+        
+        print(f"[GET USERS] 📋 Returning {len(users_list)} active users to admin")
         
         return jsonify({"users": users_list})
         
     except Exception as e:
         print(f"[GET USERS ERROR] ❌ {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": "Failed to get users"}), 500
 
 @app.route('/api/admin/upload-assign', methods=['POST'])
 @require_admin
 def admin_upload_and_assign():
-    """Admin uploads CSV and assigns work to users with global duplicate tracking"""
+    """Admin uploads CSV and assigns work to users - ✅ Proper user_id handling"""
     try:
         if 'csv_file' not in request.files:
             return jsonify({"error": "No file provided"}), 400
@@ -668,6 +662,10 @@ def admin_upload_and_assign():
         except:
             return jsonify({"error": "Invalid assignments format"}), 400
         
+        # ✅ Reload users to get latest data
+        load_users()
+        
+        # Check if users already have work
         users_with_assignments = []
         for assignment in assignments:
             user_id = assignment['userId']
@@ -678,14 +676,14 @@ def admin_upload_and_assign():
             username = user['username']
             
             for session_token, session in SESSIONS.items():
-                if session.get('username') == username and session.get('assigned_by_admin', False):
-                    session_expires = datetime.fromisoformat(session.get('expires_at', datetime.min.isoformat()))
-                    if datetime.now() <= session_expires:
-                        users_with_assignments.append(user['name'])
+                # ✅ Check by both username AND user_id
+                if (session.get('username') == username or session.get('user_id') == user_id) and session.get('assigned_by_admin', False):
+                    users_with_assignments.append(user['name'])
+                    break
         
         if users_with_assignments:
             return jsonify({
-                "error": f"The following users already have admin-assigned work: {', '.join(users_with_assignments)}. Please remove their existing assignments first."
+                "error": f"The following users already have admin-assigned work: {', '.join(set(users_with_assignments))}. Please remove their existing assignments first."
             }), 400
         
         filename = secure_filename(file.filename)
@@ -711,7 +709,6 @@ def admin_upload_and_assign():
         if link_col != 'link':
             df.rename(columns={link_col: 'link'}, inplace=True)
         
-        # NEW: Global duplicate checking
         original_count = len(df)
         all_links = df['link'].tolist()
         
@@ -723,14 +720,12 @@ def admin_upload_and_assign():
         
         total_duplicates = within_file_count + global_dup_count
         
-        # Keep only new links
         df_clean = df[df['link'].isin(new_links_list)].copy()
         unique_count = len(df_clean)
         
-        # Register new links globally
         register_links_globally(new_links_list, "admin")
         
-        print(f"[ADMIN UPLOAD] 📊 Original: {original_count} | Within-file dupes: {within_file_count} | Global dupes: {global_dup_count} | New unique: {unique_count}")
+        print(f"[ADMIN UPLOAD] 📊 Original: {original_count} | Dupes: {total_duplicates} | Unique: {unique_count}")
         
         total_pdfs = len(df_clean)
         user_sessions = {}
@@ -748,15 +743,15 @@ def admin_upload_and_assign():
                 
                 if start_range < 1 or end_range < 1:
                     os.remove(filepath)
-                    return jsonify({"error": f"Range values must start from 1. Invalid range for {user['name']}"}), 400
+                    return jsonify({"error": f"Range values must start from 1"}), 400
                 
                 if start_range > total_pdfs or end_range > total_pdfs:
                     os.remove(filepath)
-                    return jsonify({"error": f"Range exceeds total PDFs ({total_pdfs}). Invalid range for {user['name']}"}), 400
+                    return jsonify({"error": f"Range exceeds total PDFs ({total_pdfs})"}), 400
                 
                 if start_range > end_range:
                     os.remove(filepath)
-                    return jsonify({"error": f"Start range cannot be greater than end range for {user['name']}"}), 400
+                    return jsonify({"error": f"Start range cannot be greater than end range"}), 400
                 
                 start_idx = start_range - 1
                 end_idx = end_range
@@ -772,6 +767,7 @@ def admin_upload_and_assign():
                 
                 session_token = generate_token()
                 
+                # ✅ Include user_id in session
                 SESSIONS[session_token] = {
                     "filename": unique_filename,
                     "filepath": filepath,
@@ -780,6 +776,7 @@ def admin_upload_and_assign():
                     "username": user['username'],
                     "email": user['email'],
                     "name": user['name'],
+                    "user_id": user_id,
                     "created_at": datetime.now().isoformat(),
                     "expires_at": (datetime.now() + SESSION_TIMEOUT).isoformat(),
                     "last_accessed": datetime.now().isoformat(),
@@ -798,7 +795,7 @@ def admin_upload_and_assign():
                     "range": f"{start_range}-{end_range}"
                 }
         
-        else:
+        else:  # percentage
             current_index = 0
             
             for assignment in assignments:
@@ -826,6 +823,7 @@ def admin_upload_and_assign():
                 
                 session_token = generate_token()
                 
+                # ✅ Include user_id in session
                 SESSIONS[session_token] = {
                     "filename": unique_filename,
                     "filepath": filepath,
@@ -834,6 +832,7 @@ def admin_upload_and_assign():
                     "username": user['username'],
                     "email": user['email'],
                     "name": user['name'],
+                    "user_id": user_id,
                     "created_at": datetime.now().isoformat(),
                     "expires_at": (datetime.now() + SESSION_TIMEOUT).isoformat(),
                     "last_accessed": datetime.now().isoformat(),
@@ -882,7 +881,7 @@ def admin_upload_and_assign():
         save_sessions()
         save_work_assignments()
         
-        print(f"[ADMIN UPLOAD] ✅ CSV uploaded and assigned to {len(user_sessions)} users")
+        print(f"[ADMIN UPLOAD] ✅ Assigned to {len(user_sessions)} users")
         
         return jsonify({
             "success": True,
@@ -931,7 +930,7 @@ def remove_session(session_token):
 @app.route('/api/admin/dashboard', methods=['GET'])
 @require_admin
 def admin_dashboard():
-    """Admin dashboard endpoint - returns all sessions and stats with proper duplicate tracking"""
+    """Admin dashboard endpoint - returns all sessions and stats"""
     try:
         all_sessions = []
         total_pdfs = 0
@@ -1022,7 +1021,7 @@ def admin_dashboard():
             "total_uploaded_links": total_uploaded_links,
             "total_assigned_links": total_assigned_links,
             "completion_rate": completion_rate,
-            "global_unique_links": len(GLOBAL_LINKS)  # NEW: Total unique links ever uploaded
+            "global_unique_links": len(GLOBAL_LINKS)
         }
         
         print(f"[ADMIN DASHBOARD] 📊 Data requested - {len(all_sessions)} sessions")
@@ -1034,8 +1033,6 @@ def admin_dashboard():
         import traceback
         traceback.print_exc()
         return jsonify({"error": "Failed to load dashboard"}), 500
-
-# Continue in next message due to length...
 
 @app.route('/api/admin/user-report/<session_token>', methods=['GET'])
 @require_admin
@@ -1209,28 +1206,42 @@ Detailed Breakdown:
 @app.route('/api/check-assigned-work', methods=['GET'])
 @require_auth
 def check_assigned_work():
-    """Check if user has work assigned by admin"""
+    """✅ Check if user has work assigned - with proper user_id matching"""
     try:
         username = request.user['username']
+        user_id = request.user.get('user_id')
+        
+        # ✅ Reload sessions from file
+        load_sessions()
         
         user_sessions = []
         
+        # Find all active sessions for this user
         for session_token, session in SESSIONS.items():
-            if session.get('username') == username:
-                session_expires = datetime.fromisoformat(session.get('expires_at', datetime.min.isoformat()))
-                if datetime.now() <= session_expires:
-                    user_sessions.append({
-                        'token': session_token,
-                        'session': session,
-                        'created_at': session.get('created_at'),
-                        'assigned_by_admin': session.get('assigned_by_admin', False),
-                        'total_pdfs': len(session.get('data', []))
-                    })
+            # ✅ Match by username OR user_id
+            if session.get('username') == username or session.get('user_id') == user_id:
+                # Update last accessed
+                SESSIONS[session_token]['last_accessed'] = datetime.now().isoformat()
+                
+                user_sessions.append({
+                    'token': session_token,
+                    'session': session,
+                    'created_at': session.get('created_at'),
+                    'assigned_by_admin': session.get('assigned_by_admin', False),
+                    'total_pdfs': len(session.get('data', []))
+                })
         
         if not user_sessions:
-            print(f"[CHECK WORK] ❌ {username} has no active sessions")
-            return jsonify({"hasAssignedWork": False})
+            print(f"[CHECK WORK] ❌ {username} (ID: {user_id}) has no active sessions")
+            return jsonify({
+                "hasAssignedWork": False,
+                "message": "No active work assignments found"
+            })
         
+        # Save updated session data
+        save_sessions()
+        
+        # Prioritize admin-assigned sessions
         admin_sessions = [s for s in user_sessions if s['assigned_by_admin']]
         
         if admin_sessions:
@@ -1240,7 +1251,7 @@ def check_assigned_work():
             user_sessions.sort(key=lambda x: x['created_at'], reverse=True)
             selected_session = user_sessions[0]
         
-        print(f"[CHECK WORK] ✅ {username} has {selected_session['total_pdfs']} PDFs (admin assigned: {selected_session['assigned_by_admin']})")
+        print(f"[CHECK WORK] ✅ {username} (ID: {user_id}) has {selected_session['total_pdfs']} PDFs (admin: {selected_session['assigned_by_admin']})")
         
         return jsonify({
             "hasAssignedWork": True,
@@ -1251,7 +1262,9 @@ def check_assigned_work():
         
     except Exception as e:
         print(f"[CHECK WORK ERROR] ❌ {e}")
-        return jsonify({"error": "Check failed"}), 500
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": "Check failed", "hasAssignedWork": False}), 500
 
 @app.route('/api/check-duplicate-file', methods=['POST'])
 @require_auth
@@ -1313,7 +1326,7 @@ def check_duplicate_file():
 @app.route('/api/upload', methods=['POST'])
 @require_auth
 def upload_csv():
-    """Upload CSV file and create a review session with global duplicate tracking"""
+    """Upload CSV file and create a review session - NEVER EXPIRES"""
     try:
         if 'csv_file' not in request.files:
             return jsonify({"error": "No file provided"}), 400
@@ -1349,7 +1362,6 @@ def upload_csv():
         if link_col != 'link':
             df.rename(columns={link_col: 'link'}, inplace=True)
         
-        # NEW: Global duplicate checking
         original_count = len(df)
         all_links = df['link'].tolist()
         
@@ -1361,11 +1373,9 @@ def upload_csv():
         
         total_duplicates = within_file_count + global_dup_count
         
-        # Keep only new links
         df_clean = df[df['link'].isin(new_links_list)].copy()
         unique_count = len(df_clean)
         
-        # Register new links globally
         register_links_globally(new_links_list, request.user['username'])
         
         if 'Status' not in df_clean.columns:
@@ -1377,6 +1387,7 @@ def upload_csv():
         
         session_token = generate_token()
         
+        # ✅ Include user_id in session
         SESSIONS[session_token] = {
             "filename": unique_filename,
             "filepath": filepath,
@@ -1385,6 +1396,7 @@ def upload_csv():
             "username": request.user['username'],
             "email": request.user['email'],
             "name": request.user['name'],
+            "user_id": request.user.get('user_id'),
             "created_at": datetime.now().isoformat(),
             "expires_at": (datetime.now() + SESSION_TIMEOUT).isoformat(),
             "last_accessed": datetime.now().isoformat(),
@@ -1398,7 +1410,7 @@ def upload_csv():
         save_sessions()
         
         print(f"[UPLOAD] ✅ New session created by {request.user['username']}: {unique_count} unique PDFs")
-        print(f"[UPLOAD] 📊 Original: {original_count} | Within-file dupes: {within_file_count} | Global dupes: {global_dup_count} | New unique: {unique_count}")
+        print(f"[UPLOAD] 📊 Original: {original_count} | Dupes: {total_duplicates} | Unique: {unique_count}")
         
         return jsonify({
             "success": True,
@@ -1419,7 +1431,7 @@ def upload_csv():
 
 @app.route('/api/session-check', methods=['GET'])
 def session_check():
-    """Check if a session exists and is valid"""
+    """Check if a session exists and is valid - NEVER EXPIRES"""
     try:
         session_token = request.headers.get('X-Session-Token')
         
@@ -1427,13 +1439,9 @@ def session_check():
             return jsonify({"hasSession": False}), 200
         
         session = SESSIONS[session_token]
-        expires_at = datetime.fromisoformat(session.get('expires_at', datetime.min.isoformat()))
         
-        if datetime.now() > expires_at:
-            del SESSIONS[session_token]
-            save_sessions()
-            return jsonify({"hasSession": False}), 200
-        
+        # ✅ No expiration check - sessions never expire
+        # Just update last accessed
         SESSIONS[session_token]['last_accessed'] = datetime.now().isoformat()
         
         return jsonify({"hasSession": True})
@@ -1444,7 +1452,7 @@ def session_check():
 
 @app.route('/api/data', methods=['GET'])
 def get_data():
-    """Get session data with optional verifier filter"""
+    """Get session data with optional verifier filter - NEVER EXPIRES"""
     try:
         session_token = request.headers.get('X-Session-Token')
         
@@ -1452,13 +1460,8 @@ def get_data():
             return jsonify({"error": "Invalid session"}), 401
         
         session = SESSIONS[session_token]
-        expires_at = datetime.fromisoformat(session.get('expires_at', datetime.min.isoformat()))
         
-        if datetime.now() > expires_at:
-            del SESSIONS[session_token]
-            save_sessions()
-            return jsonify({"error": "Session expired"}), 401
-        
+        # ✅ No expiration check
         SESSIONS[session_token]['last_accessed'] = datetime.now().isoformat()
         
         data = session.get('data', [])
@@ -1473,11 +1476,9 @@ def get_data():
         print(f"[GET DATA ERROR] ❌ {e}")
         return jsonify({"error": "Failed to get data"}), 500
 
-# Continue from where it was cut off...
-
 @app.route('/api/update-status', methods=['POST'])
 def update_status():
-    """Update PDF status (Accepted/Rejected) and feedback"""
+    """Update PDF status (Accepted/Rejected) and feedback - NEVER EXPIRES"""
     try:
         session_token = request.headers.get('X-Session-Token')
         
@@ -1485,12 +1486,8 @@ def update_status():
             return jsonify({"error": "Invalid session"}), 401
         
         session = SESSIONS[session_token]
-        expires_at = datetime.fromisoformat(session.get('expires_at', datetime.min.isoformat()))
         
-        if datetime.now() > expires_at:
-            del SESSIONS[session_token]
-            save_sessions()
-            return jsonify({"error": "Session expired"}), 401
+        # ✅ No expiration check
         
         data = request.json
         link = data.get('link', '').strip()
@@ -1529,7 +1526,7 @@ def update_status():
 
 @app.route('/api/download', methods=['GET'])
 def download_csv():
-    """Download reviewed CSV file"""
+    """Download reviewed CSV file - NEVER EXPIRES"""
     try:
         session_token = request.headers.get('X-Session-Token')
         
@@ -1537,12 +1534,8 @@ def download_csv():
             return jsonify({"error": "Invalid session"}), 401
         
         session = SESSIONS[session_token]
-        expires_at = datetime.fromisoformat(session.get('expires_at', datetime.min.isoformat()))
         
-        if datetime.now() > expires_at:
-            del SESSIONS[session_token]
-            save_sessions()
-            return jsonify({"error": "Session expired"}), 401
+        # ✅ No expiration check
         
         df = pd.DataFrame(session.get('data', []))
         
@@ -1594,6 +1587,9 @@ if __name__ == '__main__':
     print(f"👤 Registered users: {len(USERS)}")
     print(f"📋 Work assignments: {len(WORK_ASSIGNMENTS)}")
     print(f"🔗 Global unique PDF links: {len(GLOBAL_LINKS)}")
+    print(f"⏰ USER SESSION TIMEOUT: NEVER EXPIRES (100 years)")
+    print(f"🔑 USER AUTH TOKEN TIMEOUT: NEVER EXPIRES (100 years)")
+    print(f"🔐 ADMIN TOKEN TIMEOUT: 24 hours")
     print("="*60)
     print("🌐 Server running on: http://0.0.0.0:5000")
     print("🌐 Also accessible at: http://localhost:5000")
