@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://13.201.123.132:5000";
+const API_URL = import.meta.env.VITE_API_URL || "http://13.201.123.132:3000";
 
 export default function AdminLogin() {
   const [username, setUsername] = useState("");
@@ -46,55 +46,78 @@ export default function AdminLogin() {
   };
 
   return (
-    <div className="min-h-screen bg-black flex items-center justify-center p-4">
-      <div className="w-full max-w-md">
+    <div className="min-h-screen bg-black flex items-center justify-center p-4 relative overflow-hidden">
+      {/* Animated background elements */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute top-20 left-20 w-64 h-64 bg-white/5 rounded-full blur-3xl animate-pulse"></div>
+        <div className="absolute bottom-20 right-20 w-96 h-96 bg-white/5 rounded-full blur-3xl animate-pulse delay-1000"></div>
+      </div>
+
+      <div className="w-full max-w-md relative z-10">
+        {/* Header */}
         <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold text-white mb-2">🔐 Admin Portal</h1>
-          <p className="text-gray-400">Sign in to access the admin dashboard</p>
+          <div className="inline-block mb-4">
+            <div className="text-7xl mb-2">🔐</div>
+          </div>
+          <h1 className="text-5xl font-bold text-white mb-3">Admin Portal</h1>
+          <p className="text-gray-400 text-lg">Secure access to dashboard</p>
         </div>
 
-        <div className="bg-gray-900 border border-gray-800 rounded-lg p-8">
+        {/* Login Card */}
+        <div className="backdrop-blur-xl bg-white/5 border-2 border-white/10 rounded-2xl p-8 shadow-2xl">
           {error && (
-            <div className="mb-4 p-3 bg-red-900/50 border border-red-700 rounded-lg text-red-200 text-sm">
-              {error}
+            <div className="mb-6 backdrop-blur-xl bg-white/20 border-2 border-white/30 rounded-xl p-4 text-white font-medium animate-shake">
+              <div className="flex items-center gap-2">
+                <span className="text-xl">⚠️</span>
+                <span>{error}</span>
+              </div>
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSubmit} className="space-y-5">
             <div>
-              <label className="block text-sm font-medium text-gray-300 mb-2">
+              <label className="block text-sm font-bold text-white mb-3 uppercase tracking-wider">
                 Admin Username
               </label>
               <input
                 type="text"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                className="w-full px-4 py-2.5 bg-black border border-gray-700 rounded-lg text-white focus:outline-none focus:border-gray-500 transition-colors"
-                placeholder="admin"
+                className="w-full px-5 py-4 backdrop-blur-xl bg-white/5 border-2 border-white/20 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:border-white focus:bg-white/10 transition-all font-medium"
+                placeholder="Enter username"
                 required
+                autoComplete="username"
               />
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-300 mb-2">
+              <label className="block text-sm font-bold text-white mb-3 uppercase tracking-wider">
                 Password
               </label>
               <input
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full px-4 py-2.5 bg-black border border-gray-700 rounded-lg text-white focus:outline-none focus:border-gray-500 transition-colors"
-                placeholder="••••••••"
+                className="w-full px-5 py-4 backdrop-blur-xl bg-white/5 border-2 border-white/20 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:border-white focus:bg-white/10 transition-all font-medium"
+                placeholder="Enter password"
                 required
+                autoComplete="current-password"
               />
             </div>
 
             <button
               type="submit"
               disabled={loading}
-              className="w-full py-3 bg-white text-black rounded-lg font-medium hover:bg-gray-200 disabled:bg-gray-700 disabled:text-gray-400 disabled:cursor-not-allowed transition-colors"
+              className="w-full py-4 bg-white text-black rounded-xl font-bold text-lg hover:bg-gray-200 disabled:bg-gray-700 disabled:text-gray-400 disabled:cursor-not-allowed transition-all shadow-lg transform hover:scale-105 disabled:transform-none"
             >
-              {loading ? "Signing in..." : "Sign In"}
+              {loading ? (
+                <span className="flex items-center justify-center gap-2">
+                  <div className="w-5 h-5 border-2 border-black border-t-transparent rounded-full animate-spin"></div>
+                  Signing in...
+                </span>
+              ) : (
+                "Sign In →"
+              )}
             </button>
           </form>
 
@@ -102,17 +125,37 @@ export default function AdminLogin() {
             <button
               type="button"
               onClick={() => navigate("/login")}
-              className="text-sm text-gray-400 hover:text-white transition-colors"
+              className="text-sm text-gray-400 hover:text-white transition-colors font-medium"
             >
               ← Back to User Login
             </button>
           </div>
         </div>
 
-        <div className="mt-6 text-center text-xs text-gray-500">
-          <p>🔒 Admin access only - Unauthorized access is prohibited</p>
+        {/* Footer Warning */}
+        <div className="mt-6 backdrop-blur-xl bg-white/5 border border-white/10 rounded-xl p-4 text-center">
+          <div className="flex items-center justify-center gap-2 text-gray-400 text-sm">
+            <span className="text-lg">🔒</span>
+            <span className="font-medium">Admin access only • Unauthorized access is prohibited</span>
+          </div>
+        </div>
+
+        {/* Additional Security Info */}
+        <div className="mt-4 text-center text-xs text-gray-600">
+          <p>All login attempts are monitored and logged</p>
         </div>
       </div>
+
+      <style>{`
+        @keyframes shake {
+          0%, 100% { transform: translateX(0); }
+          10%, 30%, 50%, 70%, 90% { transform: translateX(-5px); }
+          20%, 40%, 60%, 80% { transform: translateX(5px); }
+        }
+        .animate-shake {
+          animation: shake 0.5s;
+        }
+      `}</style>
     </div>
   );
 }

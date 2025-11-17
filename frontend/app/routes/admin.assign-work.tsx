@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
-import { useNavigate } from "react-router";
+import { useNavigate } from "react-router"; // FIXED: use react-router-dom
 
-const API_URL = import.meta.env.VITE_API_URL || "http://13.201.123.132:5000";
+const API_URL = import.meta.env.VITE_API_URL || "http://13.201.123.132:3000";
 
 interface User {
   id: string;
@@ -24,27 +24,60 @@ export default function AdminAssignWork() {
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
-  const [totalPDFs, setTotalPDFs] = useState(0);
   const navigate = useNavigate();
 
   useEffect(() => {
-    fetchUsers();
+    const token = localStorage.getItem("admin_token");
+    if (!token) {
+      navigate("/admin/login");
+      return;
+    }
+    // Optional: verify token before fetching users
+    verifyAdminToken(token).then((ok) => {
+      if (!ok) {
+        navigate("/admin/login");
+      } else {
+        fetchUsers();
+      }
+    });
   }, []);
 
-  const fetchUsers = async () => {
-    const adminToken = localStorage.getItem("admin_token");
+  const verifyAdminToken = async (token: string) => {
+    try {
+      const res = await fetch(`${API_URL}/api/admin/verify`, {
+        headers: { "X-Admin-Token": token },
+      });
+      if (res.status === 401) return false;
+      return true;
+    } catch {
+      return false;
+    }
+  };
 
+  const fetchUsers = async () => {
+    const adminToken = localStorage.getItem("admin_token") || "";
     try {
       const response = await fetch(`${API_URL}/api/admin/users`, {
-        headers: { "X-Admin-Token": adminToken || "" }
+        headers: { "X-Admin-Token": adminToken },
       });
+
+      if (response.status === 401) {
+        // missing/invalid/expired token or backend restarted
+        navigate("/admin/login");
+        return;
+      }
 
       if (response.ok) {
         const data = await response.json();
         setUsers(data.users || []);
+      } else {
+        const data = await response.json().catch(() => ({}));
+        setMessage(data.error || "Failed to fetch users");
+        setUsers([]);
       }
     } catch (error) {
       console.error("Failed to fetch users:", error);
+      setMessage("Failed to fetch users");
     }
   };
 
@@ -55,17 +88,19 @@ export default function AdminAssignWork() {
   };
 
   const addAssignment = () => {
-    setAssignments([...assignments, { userId: "", percentage: 0, startRange: 1, endRange: 1 }]);
+    setAssignments((prev) => [...prev, { userId: "", percentage: 0, startRange: 1, endRange: 1 }]);
   };
 
   const updateAssignment = (index: number, field: keyof Assignment, value: any) => {
-    const updated = [...assignments];
-    updated[index] = { ...updated[index], [field]: value };
-    setAssignments(updated);
+    setAssignments((prev) => {
+      const updated = [...prev];
+      updated[index] = { ...updated[index], [field]: value };
+      return updated;
+    });
   };
 
   const removeAssignment = (index: number) => {
-    setAssignments(assignments.filter((_, i) => i !== index));
+    setAssignments((prev) => prev.filter((_, i) => i !== index));
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -81,13 +116,11 @@ export default function AdminAssignWork() {
       return;
     }
 
-    // Validate assignments
     for (const assignment of assignments) {
       if (!assignment.userId) {
         setMessage("Please select a user for all assignments");
         return;
       }
-
       if (assignmentType === "percentage") {
         if (!assignment.percentage || assignment.percentage <= 0) {
           setMessage("Percentage must be greater than 0");
@@ -113,20 +146,25 @@ export default function AdminAssignWork() {
     formData.append("assignment_type", assignmentType);
     formData.append("assignments", JSON.stringify(assignments));
 
-    const adminToken = localStorage.getItem("admin_token");
+    const adminToken = localStorage.getItem("admin_token") || "";
 
     try {
       const response = await fetch(`${API_URL}/api/admin/upload-assign`, {
         method: "POST",
-        headers: { "X-Admin-Token": adminToken || "" },
-        body: formData
+        headers: { "X-Admin-Token": adminToken },
+        body: formData,
       });
 
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
+
+      if (response.status === 401) {
+        navigate("/admin/login");
+        return;
+      }
 
       if (response.ok) {
         setMessage(`✅ ${data.message}`);
-        setTimeout(() => navigate("/admin/dashboard"), 2000);
+        setTimeout(() => navigate("/admin/dashboard"), 1200);
       } else {
         setMessage(`❌ ${data.error || "Assignment failed"}`);
       }

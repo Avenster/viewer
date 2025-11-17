@@ -1,9 +1,9 @@
 import { createContext, useContext, useState, useEffect, type ReactNode } from "react";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://13.201.123.132:5000";
+const API_URL = import.meta.env.VITE_API_URL || "http://13.201.123.132:3000";
 
 interface User {
-  user_id?: string;  // ✅ FIXED: Added user_id
+  user_id?: string;
   username: string;
   email: string;
   name: string;
@@ -13,7 +13,7 @@ interface AuthContextType {
   user: User | null;
   authToken: string | null;
   isAuthenticated: boolean;
-  login: (username: string, password: string) => Promise<{ success: boolean; error?: string }>;
+  login: (usernameOrEmail: string, password: string) => Promise<{ success: boolean; error?: string }>;
   signup: (username: string, email: string, password: string, name: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => Promise<void>;
   setUser: (user: User | null) => void;
@@ -22,62 +22,97 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+// Keys we normalize to
+const KEY_TOKEN = "auth_token";
+const KEY_USER = "user";
+
+// Legacy keys we’ll read for backward compatibility
+const LEGACY_KEYS = {
+  token: "token",
+  user: "user_data",
+};
+
+function getStoredToken(): string | null {
+  const t = localStorage.getItem(KEY_TOKEN) || localStorage.getItem(LEGACY_KEYS.token);
+  return t || null;
+}
+
+function getStoredUser(): User | null {
+  const raw = localStorage.getItem(KEY_USER) || localStorage.getItem(LEGACY_KEYS.user);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function clearAllAuthStorage() {
+  localStorage.removeItem(KEY_TOKEN);
+  localStorage.removeItem(KEY_USER);
+  localStorage.removeItem(LEGACY_KEYS.token);
+  localStorage.removeItem(LEGACY_KEYS.user);
+  localStorage.removeItem("review_token");
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [authToken, setAuthToken] = useState<string | null>(null);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Load auth token and user from localStorage on mount
   useEffect(() => {
     const loadAuth = async () => {
       try {
-        const storedToken = localStorage.getItem("auth_token");
-        const storedUser = localStorage.getItem("user");
+        const storedToken = getStoredToken();
+        const storedUser = getStoredUser();
 
         console.log("[AuthContext] Loading from localStorage:");
-        console.log("- Token:", storedToken ? "Present" : "Missing");
-        console.log("- User:", storedUser ? "Present" : "Missing");
+        console.log("- Token key(s):", storedToken ? "Present" : "Missing");
+        console.log("- User key(s):", storedUser ? "Present" : "Missing");
 
-        if (storedToken) {  // ✅ FIXED: Only check for token, user data comes from backend
-          // Verify token is still valid
+        if (storedToken) {
           const response = await fetch(`${API_URL}/api/auth/verify`, {
-            headers: {
-              "X-Auth-Token": storedToken,
-            },
+            headers: { "X-Auth-Token": storedToken },
           });
 
           if (response.ok) {
             const data = await response.json();
+            const userData: User = data.user;
+
+            // Normalize to current keys
+            localStorage.setItem(KEY_TOKEN, storedToken);
+            localStorage.setItem(KEY_USER, JSON.stringify(userData));
+            // Clean legacy keys (optional)
+            localStorage.removeItem(LEGACY_KEYS.token);
+            localStorage.removeItem(LEGACY_KEYS.user);
+
             setAuthToken(storedToken);
-            // ✅ FIXED: Always use user data from backend response
-            const userData = data.user;
             setUser(userData);
-            // ✅ FIXED: Update localStorage with fresh user data
-            localStorage.setItem("user", JSON.stringify(userData));
             setIsAuthenticated(true);
-            console.log("[AuthContext] ✅ Auth restored from token verification");
-            console.log("[AuthContext] User data:", userData);
+
+            console.log("[AuthContext] ✅ Auth restored via verify");
+            console.log("[AuthContext] User:", userData);
           } else {
-            // Token expired or invalid
-            console.log("[AuthContext] ❌ Token expired, clearing localStorage");
-            localStorage.removeItem("auth_token");
-            localStorage.removeItem("user");
+            console.log("[AuthContext] ❌ Token invalid/expired, clearing storage");
+            clearAllAuthStorage();
             setAuthToken(null);
             setUser(null);
             setIsAuthenticated(false);
           }
         } else {
-          // No token found
-          localStorage.removeItem("user");
+          // No token; don’t trust any leftover user cache
+          if (storedUser) {
+            console.log("[AuthContext] Clearing stale user cache (no token)");
+          }
+          clearAllAuthStorage();
           setAuthToken(null);
           setUser(null);
           setIsAuthenticated(false);
         }
       } catch (error) {
         console.error("[AuthContext] Error loading auth:", error);
-        localStorage.removeItem("auth_token");
-        localStorage.removeItem("user");
+        clearAllAuthStorage();
         setAuthToken(null);
         setUser(null);
         setIsAuthenticated(false);
@@ -89,16 +124,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     loadAuth();
   }, []);
 
-  const login = async (username: string, password: string) => {
+  const login = async (usernameOrEmail: string, password: string) => {
     try {
-      console.log("[AuthContext] Login attempt for:", username);
+      console.log("[AuthContext] Login attempt for:", usernameOrEmail);
 
       const response = await fetch(`${API_URL}/api/auth/login`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ username, password }),
+        headers: { "Content-Type": "application/json" },
+        // Backend accepts either username or email in "username" field
+        body: JSON.stringify({ username: usernameOrEmail, password }),
       });
 
       const data = await response.json();
@@ -106,15 +140,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (response.ok && data.success) {
         console.log("[AuthContext] ✅ Login successful");
         console.log("[AuthContext] User data received:", data.user);
-        
-        // Store in localStorage
-        localStorage.setItem("auth_token", data.token);
-        localStorage.setItem("user", JSON.stringify(data.user));
 
-        // Update state
+        // Normalize storage
+        localStorage.setItem(KEY_TOKEN, data.token);
+        localStorage.setItem(KEY_USER, JSON.stringify(data.user));
+        // (Optional) clear legacy keys to avoid confusion
+        localStorage.removeItem(LEGACY_KEYS.token);
+        localStorage.removeItem(LEGACY_KEYS.user);
+
         setAuthToken(data.token);
         setUser(data.user);
         setIsAuthenticated(true);
+
+        // Debug: verify they’re actually persisted
+        console.log("[AuthContext] Stored auth_token:", !!localStorage.getItem(KEY_TOKEN));
+        console.log("[AuthContext] Stored user:", !!localStorage.getItem(KEY_USER));
 
         return { success: true };
       } else {
@@ -133,9 +173,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       const response = await fetch(`${API_URL}/api/auth/signup`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, email, password, name }),
       });
 
@@ -144,12 +182,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (response.ok && data.success) {
         console.log("[AuthContext] ✅ Signup successful");
         console.log("[AuthContext] User data received:", data.user);
-        
-        // Store in localStorage
-        localStorage.setItem("auth_token", data.token);
-        localStorage.setItem("user", JSON.stringify(data.user));
 
-        // Update state
+        localStorage.setItem(KEY_TOKEN, data.token);
+        localStorage.setItem(KEY_USER, JSON.stringify(data.user));
+        localStorage.removeItem(LEGACY_KEYS.token);
+        localStorage.removeItem(LEGACY_KEYS.user);
+
         setAuthToken(data.token);
         setUser(data.user);
         setIsAuthenticated(true);
@@ -169,22 +207,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       console.log("[AuthContext] Logging out...");
 
-      // Call backend logout endpoint
       if (authToken) {
         await fetch(`${API_URL}/api/auth/logout`, {
           method: "POST",
-          headers: {
-            "X-Auth-Token": authToken,
-          },
-        });
+          headers: { "X-Auth-Token": authToken },
+        }).catch(() => {});
       }
 
-      // Clear localStorage
-      localStorage.removeItem("auth_token");
-      localStorage.removeItem("user");
-      localStorage.removeItem("review_token");
+      clearAllAuthStorage();
 
-      // Clear state
       setAuthToken(null);
       setUser(null);
       setIsAuthenticated(false);
@@ -195,7 +226,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  // Don't render children until auth state is loaded
   if (isLoading) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center">

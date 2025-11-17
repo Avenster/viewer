@@ -5,3 +5,10 @@
 # React Router
 /.react-router/
 /build/
+./backend/uploads
+./backend/admin_credentials.json
+./backend/admin_tokens.json
+./backend/global_links.json
+./backend/sessions.json
+./backend/work_assignments.json
+./backend/users.json
