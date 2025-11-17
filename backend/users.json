@@ -1,34 +1,26 @@
 {
-  "2ddde41fe1754da5b2e50decf4d8d2bc": {
-    "user_id": "2ddde41fe1754da5b2e50decf4d8d2bc",
-    "username": "nss",
-    "email": "ns@gmail.com",
-    "name": "Nikhil",
-    "password_hash": "27b5d4f9d585796a0f2276a6a64d79dba8dd70f395b61a76dae438f0e7675f72",
-    "auth_token": "298275af08e14abc9ac8c7042491ea6c",
-    "token_expires_at": "2025-12-14T14:30:38.451273",
-    "created_at": "2025-11-14T14:30:38.451291",
-    "upload_sessions": []
-  },
-  "55fafd15-9d63-4d0b-9d7d-35205ffaf967": {
-    "username": "an",
-    "email": "an@gmail.com",
-    "password_hash": "scrypt:32768:8:1$EKdjVuOvq5ADJJ6f$c8ad07e89d812cbdea2f4372b2a97cc29ddf0da9fab9035a47c0a29b4a4aeab7d4d791406539d34768e42a24acdd5a068e659fc86bf100b05401d9d6b7f1c2bb",
+  "c25df6b8-9916-4ded-b5a9-8379b968ad0d": {
+    "username": "ns339722@gmail.com",
+    "email": "ns339722@gmail.com",
+    "password_hash": "scrypt:32768:8:1$A28FwxF3ObLRcXL3$012726a9567004ac91e33bbac37f4173b812ed7030cbdac41b3b17e77bc3bef9959ca032627109d7ffdc6381b2c0ede593c1cb2e15a9f9c9e79b197c2fa7329f",
     "name": "Ankur",
-    "created_at": "2025-11-14T15:15:14.712141"
+    "created_at": "2025-11-17T12:14:07.318672",
+    "is_active": true
   },
-  "ab17b2b2-13e0-48bb-8f26-f4b8ec4ca696": {
-    "username": "Avenster",
-    "email": "ankurkaushl13@gmail.com",
-    "password_hash": "scrypt:32768:8:1$1XvRIJiJclqJkuOs$e8cbdfd09a0e86b547b6cf0659e43665c6cee8878b38f6e3826f5dd75fed34ec342946b6b59bac118bedc135ae65c6395e44f06ec7e16c9260532839c8daad5b",
-    "name": "Ankur Kaushal",
-    "created_at": "2025-11-15T11:45:57.004424"
+  "d29b862e-44ca-4b4d-9695-29bc414908d2": {
+    "username": "delivery-system-db@gmail.com",
+    "email": "delivery-system-db@gmail.com",
+    "password_hash": "scrypt:32768:8:1$OwEjkiVXtUIrrcfL$5245d361c69ddfba16a42f1aa5859326930f30d0a11db2bdd9fc8af2abbdb888285eca1b7412e179fd0f79fe6f74026409df5aab1c89435188f1ab40088acc8e",
+    "name": "delivery-system-db",
+    "created_at": "2025-11-17T12:15:08.497900",
+    "is_active": true
   },
-  "b76fe29a-63df-4850-99a9-ea6ca4780980": {
-    "username": "rohit",
-    "email": "ro@gmail.com",
-    "password_hash": "scrypt:32768:8:1$Z9Fmc7llwdiEZxcw$9f9a790e63b11180a74cf288d36c57462ce32c68fff01062b4efe83f0415b2c26b48724b4549b23f6b8663c89ff4e3d66bbe36598b4a9e0c64a9baf4764d6e60",
-    "name": "rohit",
-    "created_at": "2025-11-15T15:34:44.353250"
+  "e7f9f7fd-3ddb-48d3-a822-ce99017f82dc": {
+    "username": "nn@gmail.com",
+    "email": "nn@gmail.com",
+    "password_hash": "scrypt:32768:8:1$vFwEemIheLUF0cBM$8685ef383c831640ff98eff5fa9a90ffdc3de26fdfdd05b5de6db3f75a85fbaa6b2d10efd8211c8b03a98e8d55995c7f3656cb05a506ce79240305b4084a006a",
+    "name": "nn@gmail.com",
+    "created_at": "2025-11-17T13:30:17.758240",
+    "is_active": true
   }
 }
