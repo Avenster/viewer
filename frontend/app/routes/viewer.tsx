@@ -11,7 +11,7 @@ interface DataItem {
   [key: string]: any;
 }
 
-const API_URL = (import.meta.env.VITE_API_URL as string) || "http://13.201.123.132:3000";
+const API_URL = (import.meta.env.VITE_API_URL as string) || "http://13.201.123.132:5000";
 const ITEMS_PER_PAGE = 5;
 const REVIEW_TOKEN_KEY = "review_token";
 const DIAGNOSTICS = false; // set true to see raw debug info box

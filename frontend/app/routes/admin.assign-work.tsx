@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router"; // FIXED: use react-router-dom
 
-const API_URL = import.meta.env.VITE_API_URL || "http://13.201.123.132:3000";
+const API_URL = import.meta.env.VITE_API_URL || "http://13.201.123.132:5000";
 
 interface User {
   id: string;
