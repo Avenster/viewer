@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { useNavigate } from "react-router";
+import { useNavigate } from "react-router"; // FIXED
 
 const API_URL = import.meta.env.VITE_API_URL || "http://13.201.123.132:5000";
 
@@ -16,14 +16,12 @@ export default function Dashboard() {
 
   const checkAuthAndWork = async () => {
     const token = localStorage.getItem("auth_token");
-    
     if (!token) {
       navigate("/login");
       return;
     }
 
     try {
-      // Verify auth token
       const authResponse = await fetch(`${API_URL}/api/auth/verify`, {
         headers: { "X-Auth-Token": token }
       });
@@ -37,18 +35,22 @@ export default function Dashboard() {
       const authData = await authResponse.json();
       setUser(authData.user);
 
-      // Check for assigned work
       const workResponse = await fetch(`${API_URL}/api/check-assigned-work`, {
         headers: { "X-Auth-Token": token }
       });
 
       const workData = await workResponse.json();
-      
-      if (workData.hasAssignedWork) {
-        setHasAssignedWork(true);
-        setAssignedWorkInfo(workData);
-      }
 
+      // Expecting backend to return one of: full_token | session_token | token
+      const assignedToken = workData?.full_token || workData?.session_token || workData?.token;
+
+      if (workData.hasAssignedWork && assignedToken) {
+        setHasAssignedWork(true);
+        setAssignedWorkInfo({ ...workData, assigned_token: assignedToken });
+      } else {
+        setHasAssignedWork(false);
+        setAssignedWorkInfo(null);
+      }
     } catch (error) {
       console.error("Error:", error);
     } finally {
@@ -57,8 +59,12 @@ export default function Dashboard() {
   };
 
   const handleStartAssignedWork = () => {
-    if (assignedWorkInfo?.session_token) {
-      localStorage.setItem("review_token", assignedWorkInfo.session_token);
+    const tokenToUse = assignedWorkInfo?.assigned_token;
+    if (tokenToUse) {
+      // Viewer commonly reads review_token. Ensure we store the correct one.
+      localStorage.setItem("review_token", tokenToUse);
+      // Optional flag if your viewer distinguishes admin-assigned sessions
+      localStorage.setItem("is_admin_assigned", "true");
       navigate("/viewer");
     }
   };

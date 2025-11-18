@@ -11,6 +11,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 import pandas as pd
 from functools import wraps
+from math import floor
 
 app = Flask(__name__)
 
@@ -663,9 +664,14 @@ def get_users_list():
 
 @app.route('/api/admin/upload-assign', methods=['POST'])
 @require_admin
-def admin_upload_and_assign():
-    """Admin uploads CSV and assigns work to users - ✅ Proper user_id handling"""
+def upload_assign():
+    """
+    Admin uploads CSV and assigns work to users.
+    REQUIREMENT: Always de-duplicate before assignment so users never see duplicates.
+    The 'include_duplicates' form flag (if sent by UI) is ignored.
+    """
     try:
+        # Check file
         if 'csv_file' not in request.files:
             return jsonify({"error": "No file provided"}), 400
         file = request.files['csv_file']
@@ -674,15 +680,21 @@ def admin_upload_and_assign():
         if not allowed_file(file.filename):
             return jsonify({"error": "Only CSV files allowed"}), 400
 
+        # Parse basic form data
+        _form_flag = str(request.form.get('include_duplicates', 'false')).strip().lower() == 'true'
+        include_duplicates = False  # Force de-duplication as per requirement
+
         assignments_json = request.form.get('assignments')
         assignment_type = request.form.get('assignment_type', 'percentage')
+
         if not assignments_json:
             return jsonify({"error": "No assignments provided"}), 400
         try:
             assignments = json.loads(assignments_json)
-        except:
+        except Exception:
             return jsonify({"error": "Invalid assignments format"}), 400
 
+        # Load latest users
         load_users()
 
         # Prevent double assignments for users
@@ -702,15 +714,19 @@ def admin_upload_and_assign():
                 "error": f"The following users already have admin-assigned work: {', '.join(set(users_with_assignments))}. Please remove their existing assignments first."
             }), 400
 
+        # Save uploaded file
         filename = secure_filename(file.filename)
         unique_filename = f"{uuid.uuid4()}_{filename}"
         filepath = os.path.join(UPLOAD_FOLDER, unique_filename)
         file.save(filepath)
 
         file_hash = calculate_file_hash(filepath)
+
+        # Read CSV
         df = pd.read_csv(filepath)
         df.columns = df.columns.str.strip()
 
+        # Find link column
         link_col = None
         for col in df.columns:
             if col.lower() in ['link', 'url', 'pdf', 'pdf_link']:
@@ -722,49 +738,75 @@ def admin_upload_and_assign():
         if link_col != 'link':
             df.rename(columns={link_col: 'link'}, inplace=True)
 
+        # Normalize links
+        df['link'] = df['link'].astype(str).str.strip()
         original_count = len(df)
-        all_links = df['link'].tolist()
-        dup_check = check_global_duplicates(all_links)
+
+        # Duplicate analysis using global store
+        dup_check = check_global_duplicates(df['link'].tolist())
         within_file_count = dup_check['within_file_count']
         global_dup_count = dup_check['global_duplicate_count']
         new_links_list = dup_check['new_links']
-        total_duplicates = within_file_count + global_dup_count
+        total_duplicates_identified = within_file_count + global_dup_count
 
+        # Always keep only new unique links (de-dup)
         df_clean = df[df['link'].isin(new_links_list)].copy()
         unique_count = len(df_clean)
+        duplicates_removed_count = original_count - unique_count
 
+        if unique_count == 0:
+            os.remove(filepath)
+            return jsonify({
+                "error": "After de-duplication there are 0 unique links to assign. Please upload a different file."
+            }), 400
+
+        # Register only the new links globally (no effect if none)
         register_links_globally(new_links_list, "admin")
-        print(f"[ADMIN UPLOAD] 📊 Original: {original_count} | Dupes: {total_duplicates} | Unique: {unique_count}")
+
+        # Prepare columns
+        if 'Status' not in df_clean.columns:
+            df_clean['Status'] = ''
+        if 'Feedback' not in df_clean.columns:
+            df_clean['Feedback'] = ''
 
         total_pdfs = len(df_clean)
         user_sessions = {}
 
         if assignment_type == 'range':
-            for assignment in assignments:
-                user_id = assignment['userId']
-                start_range = int(assignment.get('startRange', 0))
-                end_range = int(assignment.get('endRange', 0))
+            # Validate and ensure non-overlapping, within bounds, and non-empty
+            used = set()
+            for a in assignments:
+                user_id = a['userId']
                 if user_id not in USERS:
-                    continue
-                user = USERS[user_id]
+                    return jsonify({"error": "One or more selected users no longer exist"}), 400
+                start_range = int(a.get('startRange', 0))
+                end_range = int(a.get('endRange', 0))
                 if start_range < 1 or end_range < 1:
-                    os.remove(filepath)
-                    return jsonify({"error": f"Range values must start from 1"}), 400
-                if start_range > total_pdfs or end_range > total_pdfs:
-                    os.remove(filepath)
-                    return jsonify({"error": f"Range exceeds total PDFs ({total_pdfs})"}), 400
+                    return jsonify({"error": "Range values must be >= 1"}), 400
                 if start_range > end_range:
-                    os.remove(filepath)
-                    return jsonify({"error": f"Start range cannot be greater than end range"}), 400
+                    return jsonify({"error": "Start range cannot be greater than end range"}), 400
+                if end_range > total_pdfs:
+                    return jsonify({"error": f"Range exceeds total PDFs ({total_pdfs})"}), 400
+                for i in range(start_range, end_range + 1):
+                    if i in used:
+                        return jsonify({"error": f"Overlapping ranges detected at index {i}"}), 400
+                for i in range(start_range, end_range + 1):
+                    used.add(i)
+
+            # Create sessions
+            for a in assignments:
+                user_id = a['userId']
+                user = USERS[user_id]
+                start_range = int(a.get('startRange'))
+                end_range = int(a.get('endRange'))
                 start_idx = start_range - 1
                 end_idx = end_range
                 user_df = df_clean.iloc[start_idx:end_idx].copy()
-                if 'Status' not in user_df.columns:
-                    user_df['Status'] = ''
-                if 'Feedback' not in user_df.columns:
-                    user_df['Feedback'] = ''
+                if user_df.empty:
+                    return jsonify({"error": f"Computed 0 PDFs for {user['name']} with range {start_range}-{end_range}"}), 400
                 if 'Verified By' not in user_df.columns:
                     user_df['Verified By'] = user['name']
+
                 session_token = generate_token()
                 SESSIONS[session_token] = {
                     "filename": unique_filename,
@@ -781,8 +823,10 @@ def admin_upload_and_assign():
                     "assigned_by_admin": True,
                     "assigned_count": len(user_df),
                     "assigned_range": f"{start_range}-{end_range}",
-                    "duplicates_removed": 0,
-                    "duplicate_links": []
+                    # Store actual duplicates removed count
+                    "duplicates_removed": duplicates_removed_count,
+                    "duplicate_links": [],
+                    "include_duplicates": include_duplicates
                 }
                 user_sessions[user_id] = {
                     "session_token": session_token,
@@ -791,25 +835,71 @@ def admin_upload_and_assign():
                     "data": user_df.to_dict('records'),
                     "range": f"{start_range}-{end_range}"
                 }
+
         else:
+            # Percentage-based assignment: strong validation + fair rounding
+            if len(assignments) == 0:
+                return jsonify({"error": "No assignments provided"}), 400
+
+            # Validate percentages > 0 and sum to 100
+            total_pct = 0
+            for a in assignments:
+                pct = a.get('percentage', 0)
+                if pct is None:
+                    return jsonify({"error": "Each assignment must include 'percentage'"}), 400
+                try:
+                    pct = float(pct)
+                except Exception:
+                    return jsonify({"error": "Percentages must be numeric"}), 400
+                if pct <= 0:
+                    return jsonify({"error": "All percentages must be > 0"}), 400
+                a['percentage'] = pct
+                total_pct += pct
+            if round(total_pct) != 100:
+                return jsonify({"error": f"Total percentage must be 100 (got {total_pct})"}), 400
+
+            # Compute fair allocation using remainder distribution
+            alloc = []
+            remainder_list = []
+            base_sum = 0
+            for idx, a in enumerate(assignments):
+                exact = total_pdfs * a['percentage'] / 100.0
+                base = floor(exact)
+                base_sum += base
+                alloc.append(base)
+                remainder_list.append((exact - base, idx))
+            leftover = total_pdfs - base_sum
+            remainder_list.sort(reverse=True)  # by remainder desc
+            i = 0
+            while leftover > 0 and i < len(remainder_list):
+                _, idx = remainder_list[i]
+                alloc[idx] += 1
+                leftover -= 1
+                i += 1
+            for idx, count in enumerate(alloc):
+                if count <= 0:
+                    name = USERS.get(assignments[idx]['userId'], {}).get('name', 'Unknown')
+                    return jsonify({"error": f"Computed 0 PDFs for {name} after rounding. Adjust percentages."}), 400
+
+            # Create user sessions
             current_index = 0
-            for assignment in assignments:
-                user_id = assignment['userId']
-                percentage = assignment['percentage']
+            for idx, a in enumerate(assignments):
+                user_id = a['userId']
                 if user_id not in USERS:
-                    continue
+                    return jsonify({"error": "One or more selected users no longer exist"}), 400
                 user = USERS[user_id]
-                pdfs_count = int(total_pdfs * percentage / 100)
+                count = alloc[idx]
                 start_idx = current_index
-                end_idx = start_idx + pdfs_count
+                end_idx = start_idx + count
                 user_df = df_clean.iloc[start_idx:end_idx].copy()
                 current_index = end_idx
-                if 'Status' not in user_df.columns:
-                    user_df['Status'] = ''
-                if 'Feedback' not in user_df.columns:
-                    user_df['Feedback'] = ''
+
+                if user_df.empty:
+                    return jsonify({"error": f"Computed 0 PDFs for {user['name']} with {a['percentage']}%"}), 400
+
                 if 'Verified By' not in user_df.columns:
                     user_df['Verified By'] = user['name']
+
                 session_token = generate_token()
                 SESSIONS[session_token] = {
                     "filename": unique_filename,
@@ -825,29 +915,33 @@ def admin_upload_and_assign():
                     "last_accessed": datetime.now().isoformat(),
                     "assigned_by_admin": True,
                     "assigned_count": len(user_df),
-                    "assigned_percentage": percentage,
-                    "duplicates_removed": 0,
-                    "duplicate_links": []
+                    "assigned_percentage": a['percentage'],
+                    # Store actual duplicates removed count
+                    "duplicates_removed": duplicates_removed_count,
+                    "duplicate_links": [],
+                    "include_duplicates": include_duplicates
                 }
                 user_sessions[user_id] = {
                     "session_token": session_token,
                     "username": user['username'],
                     "name": user['name'],
                     "data": user_df.to_dict('records'),
-                    "percentage": percentage
+                    "percentage": a['percentage']
                 }
 
+        # Persist work assignment meta
         assignment_id = str(uuid.uuid4())
         WORK_ASSIGNMENTS[assignment_id] = {
             "filename": unique_filename,
             "file_hash": file_hash,
             "original_count": original_count,
-            "unique_count": unique_count,
-            "duplicates_count": total_duplicates,
+            "unique_count": len(df_clean),  # what was actually distributed to users
+            "duplicates_count": duplicates_removed_count,
             "within_file_duplicates": within_file_count,
             "global_duplicates": global_dup_count,
             "duplicate_links": [],
             "assignment_type": assignment_type,
+            "include_duplicates": include_duplicates,
             "assignments": [
                 {
                     "user_id": uid,
@@ -866,7 +960,7 @@ def admin_upload_and_assign():
 
         save_sessions()
         save_work_assignments()
-        print(f"[ADMIN UPLOAD] ✅ Assigned to {len(user_sessions)} users")
+        print(f"[ADMIN UPLOAD] ✅ Assigned to {len(user_sessions)} users | de-duplicated | orig={original_count} assigned={len(df_clean)} removed={duplicates_removed_count}")
 
         return jsonify({
             "success": True,
@@ -874,10 +968,11 @@ def admin_upload_and_assign():
             "assignment_id": assignment_id,
             "assignment_type": assignment_type,
             "total_pdfs": original_count,
-            "unique_pdfs": unique_count,
-            "duplicates": total_duplicates,
+            "unique_pdfs": len(df_clean),
+            "duplicates_identified": total_duplicates_identified,
             "within_file_duplicates": within_file_count,
             "global_duplicates": global_dup_count,
+            "duplicates_removed": duplicates_removed_count,
             "users_assigned": len(user_sessions)
         })
     except Exception as e:
@@ -977,7 +1072,8 @@ def admin_dashboard():
                 "assigned_by_admin": session.get('assigned_by_admin', False),
                 "assigned_count": session.get('assigned_count', len(df_data)),
                 "assigned_range": session.get('assigned_range'),
-                "assigned_percentage": session.get('assigned_percentage')
+                "assigned_percentage": session.get('assigned_percentage'),
+                "include_duplicates": session.get('include_duplicates', False)
             })
 
         completion_rate = 0

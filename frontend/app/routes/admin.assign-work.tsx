@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from "react";
-import { useNavigate } from "react-router"; // FIXED: use react-router-dom
+// Additions/Changes annotated with // NEW or // CHANGED comments
 
+import React, { useState, useEffect } from "react";
+import { useNavigate } from "react-router"; // Ensure react-router-dom
 const API_URL = import.meta.env.VITE_API_URL || "http://13.201.123.132:5000";
 
 interface User {
@@ -22,6 +23,7 @@ export default function AdminAssignWork() {
   const [file, setFile] = useState<File | null>(null);
   const [assignmentType, setAssignmentType] = useState<"percentage" | "range">("percentage");
   const [assignments, setAssignments] = useState<Assignment[]>([]);
+  const [includeDuplicates, setIncludeDuplicates] = useState(false); // NEW
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const navigate = useNavigate();
@@ -32,23 +34,16 @@ export default function AdminAssignWork() {
       navigate("/admin/login");
       return;
     }
-    // Optional: verify token before fetching users
     verifyAdminToken(token).then((ok) => {
-      if (!ok) {
-        navigate("/admin/login");
-      } else {
-        fetchUsers();
-      }
+      if (!ok) navigate("/admin/login");
+      else fetchUsers();
     });
-  }, []);
+  }, [navigate]);
 
   const verifyAdminToken = async (token: string) => {
     try {
-      const res = await fetch(`${API_URL}/api/admin/verify`, {
-        headers: { "X-Admin-Token": token },
-      });
-      if (res.status === 401) return false;
-      return true;
+      const res = await fetch(`${API_URL}/api/admin/verify`, { headers: { "X-Admin-Token": token } });
+      return res.status !== 401;
     } catch {
       return false;
     }
@@ -57,34 +52,25 @@ export default function AdminAssignWork() {
   const fetchUsers = async () => {
     const adminToken = localStorage.getItem("admin_token") || "";
     try {
-      const response = await fetch(`${API_URL}/api/admin/users`, {
-        headers: { "X-Admin-Token": adminToken },
-      });
-
+      const response = await fetch(`${API_URL}/api/admin/users`, { headers: { "X-Admin-Token": adminToken } });
       if (response.status === 401) {
-        // missing/invalid/expired token or backend restarted
         navigate("/admin/login");
         return;
       }
-
-      if (response.ok) {
-        const data = await response.json();
-        setUsers(data.users || []);
-      } else {
-        const data = await response.json().catch(() => ({}));
+      const data = await response.json().catch(() => ({}));
+      if (response.ok) setUsers(data.users || []);
+      else {
         setMessage(data.error || "Failed to fetch users");
         setUsers([]);
       }
-    } catch (error) {
-      console.error("Failed to fetch users:", error);
+    } catch (e) {
+      console.error(e);
       setMessage("Failed to fetch users");
     }
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      setFile(e.target.files[0]);
-    }
+    if (e.target.files?.[0]) setFile(e.target.files[0]);
   };
 
   const addAssignment = () => {
@@ -105,46 +91,55 @@ export default function AdminAssignWork() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-
     if (!file) {
       setMessage("Please select a CSV file");
       return;
     }
-
     if (assignments.length === 0) {
       setMessage("Please add at least one assignment");
       return;
     }
-
-    for (const assignment of assignments) {
-      if (!assignment.userId) {
+    for (const a of assignments) {
+      if (!a.userId) {
         setMessage("Please select a user for all assignments");
         return;
       }
       if (assignmentType === "percentage") {
-        if (!assignment.percentage || assignment.percentage <= 0) {
+        if (!a.percentage || a.percentage <= 0) {
           setMessage("Percentage must be greater than 0");
           return;
         }
       } else {
-        if (!assignment.startRange || !assignment.endRange) {
-          setMessage("Please provide valid range values");
+        if (!a.startRange || !a.endRange || a.startRange > a.endRange) {
+          setMessage("Provide valid range values (start <= end)");
           return;
         }
-        if (assignment.startRange > assignment.endRange) {
-          setMessage("Start range must be less than or equal to end range");
-          return;
-        }
+      }
+    }
+
+    if (assignmentType === "percentage") {
+      const totalPct = assignments.reduce((s, a) => s + (a.percentage || 0), 0);
+      if (totalPct !== 100) {
+        setMessage("Total percentage must equal 100%");
+        return;
       }
     }
 
     setLoading(true);
     setMessage("");
 
+    const payloadAssignments = assignments.map(a => ({
+      userId: a.userId,
+      percentage: a.percentage,
+      startRange: a.startRange,
+      endRange: a.endRange
+    }));
+
     const formData = new FormData();
     formData.append("csv_file", file);
     formData.append("assignment_type", assignmentType);
-    formData.append("assignments", JSON.stringify(assignments));
+    formData.append("assignments", JSON.stringify(payloadAssignments));
+    formData.append("include_duplicates", includeDuplicates ? "true" : "false"); // NEW
 
     const adminToken = localStorage.getItem("admin_token") || "";
 
@@ -152,24 +147,21 @@ export default function AdminAssignWork() {
       const response = await fetch(`${API_URL}/api/admin/upload-assign`, {
         method: "POST",
         headers: { "X-Admin-Token": adminToken },
-        body: formData,
+        body: formData
       });
-
       const data = await response.json().catch(() => ({}));
-
       if (response.status === 401) {
         navigate("/admin/login");
         return;
       }
-
       if (response.ok) {
-        setMessage(`✅ ${data.message}`);
+        setMessage(`✅ ${data.message || "Work assigned"}`);
         setTimeout(() => navigate("/admin/dashboard"), 1200);
       } else {
         setMessage(`❌ ${data.error || "Assignment failed"}`);
       }
-    } catch (error) {
-      console.error("Assignment error:", error);
+    } catch (err) {
+      console.error(err);
       setMessage("❌ Failed to assign work");
     } finally {
       setLoading(false);
@@ -181,6 +173,7 @@ export default function AdminAssignWork() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-black p-6">
       <div className="max-w-4xl mx-auto">
+
         <div className="flex items-center justify-between mb-8">
           <div>
             <h1 className="text-3xl font-bold text-white mb-2">📤 Assign Work</h1>
@@ -188,7 +181,7 @@ export default function AdminAssignWork() {
           </div>
           <button
             onClick={() => navigate("/admin/dashboard")}
-            className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
+            className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg"
           >
             ← Back to Dashboard
           </button>
@@ -201,17 +194,15 @@ export default function AdminAssignWork() {
         )}
 
         <form onSubmit={handleSubmit} className="space-y-6">
-          {/* File Upload */}
+          {/* File */}
           <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-6">
-            <label className="block text-white font-semibold mb-4">
-              1. Upload CSV File
-            </label>
+            <label className="block text-white font-semibold mb-4">1. Upload CSV File</label>
             <input
               type="file"
               accept=".csv"
               onChange={handleFileChange}
               required
-              className="w-full px-4 py-3 bg-gray-900/50 border border-gray-600 rounded-lg text-white file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:bg-blue-600 file:text-white hover:file:bg-blue-700"
+              className="w-full px-4 py-3 bg-gray-900/50 border border-gray-600 rounded-lg text-white"
             />
             {file && (
               <p className="mt-2 text-sm text-green-400">
@@ -220,31 +211,37 @@ export default function AdminAssignWork() {
             )}
           </div>
 
-          {/* Assignment Type */}
+            {/* Include duplicates option */}
           <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-6">
-            <label className="block text-white font-semibold mb-4">
-              2. Assignment Type
-            </label>
-            <div className="flex gap-4">
-              <label className="flex items-center gap-2 cursor-pointer">
+            <label className="block text-white font-semibold mb-4">2. Options</label>
+            <div className="flex flex-col gap-4">
+              <div className="flex gap-6">
+                <label className="flex items-center gap-2 text-gray-300 cursor-pointer">
+                  <input
+                    type="radio"
+                    value="percentage"
+                    checked={assignmentType === "percentage"}
+                    onChange={(e) => setAssignmentType(e.target.value as "percentage")}
+                  />
+                  Percentage-based
+                </label>
+                <label className="flex items-center gap-2 text-gray-300 cursor-pointer">
+                  <input
+                    type="radio"
+                    value="range"
+                    checked={assignmentType === "range"}
+                    onChange={(e) => setAssignmentType(e.target.value as "range")}
+                  />
+                  Range-based
+                </label>
+              </div>
+              <label className="flex items-center gap-3 text-gray-300">
                 <input
-                  type="radio"
-                  value="percentage"
-                  checked={assignmentType === "percentage"}
-                  onChange={(e) => setAssignmentType(e.target.value as "percentage")}
-                  className="w-4 h-4"
+                  type="checkbox"
+                  checked={includeDuplicates}
+                  onChange={(e) => setIncludeDuplicates(e.target.checked)}
                 />
-                <span className="text-gray-300">Percentage-based</span>
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="radio"
-                  value="range"
-                  checked={assignmentType === "range"}
-                  onChange={(e) => setAssignmentType(e.target.value as "range")}
-                  className="w-4 h-4"
-                />
-                <span className="text-gray-300">Range-based</span>
+                Include duplicate links (do NOT filter out duplicates before assignment)
               </label>
             </div>
           </div>
@@ -252,56 +249,48 @@ export default function AdminAssignWork() {
           {/* Assignments */}
           <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-6">
             <div className="flex items-center justify-between mb-4">
-              <label className="text-white font-semibold">
-                3. Assign to Users
-              </label>
+              <label className="text-white font-semibold">3. Assign to Users</label>
               <button
                 type="button"
                 onClick={addAssignment}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors"
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg"
               >
                 + Add User
               </button>
             </div>
 
             {assignments.length === 0 ? (
-              <p className="text-gray-400 text-center py-8">
-                Click "+ Add User" to start assigning work
-              </p>
+              <p className="text-gray-400 text-center py-8">Click "+ Add User" to start assigning work</p>
             ) : (
               <div className="space-y-4">
-                {assignments.map((assignment, index) => (
-                  <div key={index} className="bg-gray-900/50 border border-gray-600 rounded-lg p-4">
+                {assignments.map((a, idx) => (
+                  <div key={idx} className="bg-gray-900/50 border border-gray-600 rounded-lg p-4">
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                       <div>
                         <label className="block text-sm text-gray-400 mb-2">User</label>
                         <select
-                          value={assignment.userId}
-                          onChange={(e) => updateAssignment(index, "userId", e.target.value)}
+                          value={a.userId}
+                          onChange={(e) => updateAssignment(idx, "userId", e.target.value)}
                           required
                           className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white"
                         >
                           <option value="">Select user...</option>
-                          {users.map((user) => (
-                            <option key={user.id} value={user.id}>
-                              {user.name} (@{user.username})
-                            </option>
+                          {users.map((u) => (
+                            <option key={u.id} value={u.id}>{u.name} (@{u.username})</option>
                           ))}
                         </select>
                       </div>
-
                       {assignmentType === "percentage" ? (
                         <div>
                           <label className="block text-sm text-gray-400 mb-2">Percentage</label>
                           <input
                             type="number"
-                            min="1"
-                            max="100"
-                            value={assignment.percentage || ""}
-                            onChange={(e) => updateAssignment(index, "percentage", parseInt(e.target.value) || 0)}
+                            min={1}
+                            max={100}
+                            value={a.percentage || ""}
+                            onChange={(e) => updateAssignment(idx, "percentage", parseInt(e.target.value) || 0)}
                             required
                             className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white"
-                            placeholder="e.g., 50"
                           />
                         </div>
                       ) : (
@@ -310,34 +299,31 @@ export default function AdminAssignWork() {
                             <label className="block text-sm text-gray-400 mb-2">Start Range</label>
                             <input
                               type="number"
-                              min="1"
-                              value={assignment.startRange || ""}
-                              onChange={(e) => updateAssignment(index, "startRange", parseInt(e.target.value) || 1)}
+                              min={1}
+                              value={a.startRange || ""}
+                              onChange={(e) => updateAssignment(idx, "startRange", parseInt(e.target.value) || 1)}
                               required
                               className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white"
-                              placeholder="e.g., 1"
                             />
                           </div>
                           <div>
                             <label className="block text-sm text-gray-400 mb-2">End Range</label>
                             <input
                               type="number"
-                              min="1"
-                              value={assignment.endRange || ""}
-                              onChange={(e) => updateAssignment(index, "endRange", parseInt(e.target.value) || 1)}
+                              min={1}
+                              value={a.endRange || ""}
+                              onChange={(e) => updateAssignment(idx, "endRange", parseInt(e.target.value) || 1)}
                               required
                               className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white"
-                              placeholder="e.g., 100"
                             />
                           </div>
                         </>
                       )}
-
                       <div className="flex items-end">
                         <button
                           type="button"
-                          onClick={() => removeAssignment(index)}
-                          className="w-full px-3 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
+                          onClick={() => removeAssignment(idx)}
+                          className="w-full px-3 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg"
                         >
                           Remove
                         </button>
@@ -352,19 +338,19 @@ export default function AdminAssignWork() {
               <div className="mt-4 p-3 bg-gray-900/50 rounded-lg">
                 <div className="flex justify-between text-sm">
                   <span className="text-gray-400">Total Percentage:</span>
-                  <span className={`font-semibold ${totalPercentage === 100 ? "text-green-400" : "text-yellow-400"}`}>
-                    {totalPercentage}% {totalPercentage !== 100 && "(Should be 100%)"}
+                  <span className={totalPercentage === 100 ? "text-green-400 font-semibold" : "text-yellow-400 font-semibold"}>
+                    {totalPercentage}%
+                    {totalPercentage !== 100 && " (Should be 100%)"}
                   </span>
                 </div>
               </div>
             )}
           </div>
 
-          {/* Submit Button */}
           <button
             type="submit"
             disabled={loading}
-            className="w-full py-3 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white rounded-lg font-semibold disabled:from-gray-700 disabled:to-gray-700 disabled:cursor-not-allowed transition-all"
+            className="w-full py-3 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white rounded-lg font-semibold disabled:opacity-60"
           >
             {loading ? "Assigning..." : "Assign Work"}
           </button>

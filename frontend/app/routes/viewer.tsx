@@ -7,26 +7,42 @@ interface DataItem {
   Status?: string;
   Feedback?: string;
   "Verified By"?: string;
-  verified_by?: string;
+  DuplicateType?: string;
   [key: string]: any;
+}
+
+interface Meta {
+  original_file_count?: number;
+  unique_file_count?: number;
+  duplicates_removed?: number;
+  within_file_duplicates?: number;
+  global_duplicates?: number;
+  include_duplicates?: boolean;
+  assigned_by_admin?: boolean;
+  assigned_range?: string | null;
+  assigned_percentage?: number | null;
+  session_created_at?: string;
 }
 
 const API_URL = (import.meta.env.VITE_API_URL as string) || "http://13.201.123.132:5000";
 const ITEMS_PER_PAGE = 5;
 const REVIEW_TOKEN_KEY = "review_token";
-const DIAGNOSTICS = false; // set true to see raw debug info box
+const DIAGNOSTICS = false;
 
 export default function Viewer() {
   const navigate = useNavigate();
 
-  // Core state
+  // Core session state
   const [sessionToken, setSessionToken] = useState<string | null>(null);
   const [hasSession, setHasSession] = useState<boolean>(false);
   const [data, setData] = useState<DataItem[]>([]);
+  const [meta, setMeta] = useState<Meta | null>(null);
+
+  // Loading flags
   const [loading, setLoading] = useState<boolean>(true);
   const [checkingSession, setCheckingSession] = useState<boolean>(true);
 
-  // UI / filters / messages
+  // UI / filters
   const [message, setMessage] = useState<string>("");
   const [page, setPage] = useState<number>(0);
   const [verifierFilter, setVerifierFilter] = useState<string>("");
@@ -38,7 +54,7 @@ export default function Viewer() {
   const [lastFetchCount, setLastFetchCount] = useState<number>(0);
   const [lastRawResponse, setLastRawResponse] = useState<any>(null);
 
-  // Utilities
+  // Helpers
   const buildHeaders = (tokenOverride?: string) => {
     const t = tokenOverride ?? sessionToken ?? localStorage.getItem(REVIEW_TOKEN_KEY);
     const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -48,38 +64,65 @@ export default function Viewer() {
 
   const setTransientMessage = (msg: string, ms = 2500) => {
     setMessage(msg);
-    if (ms > 0) {
-      setTimeout(() => setMessage(""), ms);
-    }
+    if (ms > 0) setTimeout(() => setMessage(""), ms);
   };
 
-  // Load token from storage (initial + on storage events)
-  useEffect(() => {
-    const initialToken = localStorage.getItem(REVIEW_TOKEN_KEY);
-    if (initialToken) {
-      setSessionToken(initialToken);
-    }
-    // Listen for changes to review_token (e.g. other component sets it after upload)
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === REVIEW_TOKEN_KEY) {
-        setSessionToken(e.newValue);
+  // Derive missing meta pieces client-side when possible
+  const deriveMeta = (items: DataItem[], metaIn: Meta | null): Meta | null => {
+    if (!metaIn) return null;
+
+    const derived: Meta = { ...metaIn };
+
+    // Prefer server value; otherwise compute from counts if available
+    if (typeof derived.duplicates_removed !== "number") {
+      const orig = typeof derived.original_file_count === "number" ? derived.original_file_count : undefined;
+      const uniq = typeof derived.unique_file_count === "number" ? derived.unique_file_count : undefined;
+
+      if (typeof orig === "number" && typeof uniq === "number") {
+        derived.duplicates_removed = Math.max(orig - uniq, 0);
+      } else if (typeof orig === "number") {
+        // Fallback: unique ≈ displayed
+        derived.duplicates_removed = Math.max(orig - items.length, 0);
+      } else if (
+        typeof derived.within_file_duplicates === "number" &&
+        typeof derived.global_duplicates === "number"
+      ) {
+        derived.duplicates_removed = Math.max(
+          (derived.within_file_duplicates || 0) + (derived.global_duplicates || 0),
+          0
+        );
       }
+    }
+
+    // If unique count not provided, use displayed count
+    if (typeof derived.unique_file_count !== "number") {
+      derived.unique_file_count = items.length;
+    }
+
+    return derived;
+  };
+
+  // Load token at mount + storage events
+  useEffect(() => {
+    const initial = localStorage.getItem(REVIEW_TOKEN_KEY);
+    if (initial) setSessionToken(initial);
+    const listener = (e: StorageEvent) => {
+      if (e.key === REVIEW_TOKEN_KEY) setSessionToken(e.newValue);
     };
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
+    window.addEventListener("storage", listener);
+    return () => window.removeEventListener("storage", listener);
   }, []);
 
-  // Whenever sessionToken changes, re-check session & data
+  // Validate session when token changes
   useEffect(() => {
     if (!sessionToken) {
-      // No token present
       setHasSession(false);
       setData([]);
+      setMeta(null);
       setLoading(false);
       setCheckingSession(false);
       return;
     }
-    // With token, validate session
     (async () => {
       setCheckingSession(true);
       try {
@@ -90,17 +133,18 @@ export default function Viewer() {
         const valid = !!json?.hasSession;
         setHasSession(valid);
         if (valid) {
-          await reloadData(); // fetch data right away
+          await reloadData();
         } else {
-          // invalid token -> clear
           localStorage.removeItem(REVIEW_TOKEN_KEY);
           setSessionToken(null);
           setData([]);
+          setMeta(null);
         }
       } catch (err) {
-        console.error("[Viewer] Session check error:", err);
+        console.error("[Viewer] session check error:", err);
         setHasSession(false);
         setData([]);
+        setMeta(null);
       } finally {
         setCheckingSession(false);
         setLoading(false);
@@ -109,54 +153,53 @@ export default function Viewer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionToken]);
 
-  // Fetch data with optional verifier
+  // Fetch data (with optional verifier)
   const fetchData = useCallback(
-    async (verifierParam?: string | null): Promise<DataItem[]> => {
-      if (!sessionToken) return [];
+    async (verifierParam?: string | null): Promise<{ items: DataItem[]; meta: Meta | null }> => {
+      if (!sessionToken) return { items: [], meta: null };
       try {
         const url = new URL(`${API_URL}/api/data`);
         if (verifierParam) url.searchParams.set("verifier", verifierParam);
-
         const response = await fetch(url.toString(), { headers: buildHeaders() });
-
         if (response.status === 401) {
-            // invalid/expired (though backend sessions never expire unless token wrong)
           localStorage.removeItem(REVIEW_TOKEN_KEY);
           setSessionToken(null);
           setHasSession(false);
           setData([]);
-          setTransientMessage("❌ Session invalid. Please upload again.", 3000);
-          return [];
+          setMeta(null);
+          setTransientMessage("❌ Session invalid.", 3000);
+          return { items: [], meta: null };
         }
-
         const result = await response.json().catch(() => ({}));
         setLastRawResponse(result);
+        const rawItems = Array.isArray(result.data) ? result.data : [];
+        setLastFetchCount(rawItems.length);
 
-        const items = Array.isArray(result.data) ? result.data : [];
-        setLastFetchCount(items.length);
-
-        const normalized = items
+        const normalized = rawItems
           .map((it: any) => {
             const rawLink = (it.link ?? it.Link ?? it.URL ?? "").toString().trim();
-            if (!rawLink) return null; // skip empty
-            const verified = it["Verified By"] ?? it.verified_by ?? it.Verified ?? it["VerifiedBy"] ?? "";
-            const status = it.Status ?? it.status ?? "";
-            const feedback = it.Feedback ?? it.feedback ?? "";
+            if (!rawLink) return null;
             return {
               ...it,
               link: rawLink,
-              "Verified By": verified,
-              Status: status,
-              Feedback: feedback,
+              "Verified By":
+                it["Verified By"] ?? it.verified_by ?? it.Verified ?? it["VerifiedBy"] ?? "",
+              Status: it.Status ?? it.status ?? "",
+              Feedback: it.Feedback ?? it.feedback ?? "",
+              DuplicateType: it.DuplicateType ?? "",
             };
           })
           .filter(Boolean) as DataItem[];
 
-        return normalized;
+        // Accept meta if server provides; derive missing parts
+        const incomingMeta: Meta | null = result.meta || null;
+        const mergedMeta = deriveMeta(normalized, incomingMeta);
+
+        return { items: normalized, meta: mergedMeta };
       } catch (error) {
         console.error("[Viewer] fetchData error:", error);
         setTransientMessage("❌ Failed to connect to server", 3000);
-        return [];
+        return { items: [], meta: null };
       }
     },
     [sessionToken]
@@ -172,15 +215,16 @@ export default function Viewer() {
 
   const reloadData = useCallback(
     async (verifier?: string | null) => {
-      const items = await fetchData(verifier);
+      const { items, meta: fetchedMeta } = await fetchData(verifier);
       const filtered = applyPendingFilter(items);
       setData(filtered);
+      setMeta(fetchedMeta);
       setPage(0);
     },
     [fetchData, pendingOnly]
   );
 
-  // Filter handlers
+  // Filter actions
   const applyVerifierFilter = async () => {
     const name = verifierFilter.trim();
     if (!name) {
@@ -207,44 +251,37 @@ export default function Viewer() {
   // Status update
   const updateStatus = async (link: string, status: string, providedFeedback = "") => {
     if (!sessionToken) {
-      setTransientMessage("❌ No session token. Upload again.");
+      setTransientMessage("❌ No session token.");
       return;
     }
     try {
-      const body = {
-        link,
-        status,
-        feedback: status === "Rejected" ? providedFeedback : "",
-      };
+      const body = { link, status, feedback: status === "Rejected" ? providedFeedback : "" };
       const response = await fetch(`${API_URL}/api/update-status`, {
         method: "POST",
         headers: buildHeaders(),
         body: JSON.stringify(body),
       });
-
       if (response.status === 401) {
         localStorage.removeItem(REVIEW_TOKEN_KEY);
         setSessionToken(null);
         setHasSession(false);
         setData([]);
-        setTransientMessage("❌ Session invalid. Upload again.", 3000);
+        setMeta(null);
+        setTransientMessage("❌ Session invalid.", 3000);
         return;
       }
-
       if (response.ok) {
-        setTransientMessage(`✅ Marked as ${status}`, 1800);
+        setTransientMessage(`✅ Marked as ${status}`, 1500);
         setData((prev) =>
-            prev.map((item) =>
-              (item.link ?? "").toString().trim() === link
-                ? {
-                    ...item,
-                    Status: status,
-                    Feedback: status === "Rejected"
-                      ? providedFeedback || item.Feedback
-                      : item.Feedback,
-                  }
-                : item
-            )
+          prev.map((item) =>
+            (item.link ?? "").trim() === link
+              ? {
+                  ...item,
+                  Status: status,
+                  Feedback: status === "Rejected" ? providedFeedback || item.Feedback : item.Feedback,
+                }
+              : item
+          )
         );
         setFeedbacks((prev) => {
           const copy = { ...prev };
@@ -256,26 +293,24 @@ export default function Viewer() {
         setTransientMessage(`❌ Update failed: ${err.error || response.statusText}`, 3000);
       }
     } catch (e) {
-      console.error("[Viewer] updateStatus error:", e);
+      console.error("[Viewer] updateStatus error]", e);
       setTransientMessage("❌ Update failed (network)", 3000);
     }
   };
 
   const handleAccept = (link: string) => updateStatus(link, "Accepted");
   const handleReject = (link: string) => updateStatus(link, "Rejected", feedbacks[link] || "");
-  const handleFeedbackChange = (link: string, v: string) =>
-    setFeedbacks((prev) => ({ ...prev, [link]: v }));
+  const handleFeedbackChange = (link: string, v: string) => setFeedbacks((prev) => ({ ...prev, [link]: v }));
 
   // Pagination
   const totalPages = Math.max(1, Math.ceil(data.length / ITEMS_PER_PAGE));
   const start = page * ITEMS_PER_PAGE;
   const end = Math.min(start + ITEMS_PER_PAGE, data.length);
   const pageItems = data.slice(start, end);
-
   const handlePrevPage = () => setPage((p) => Math.max(0, p - 1));
   const handleNextPage = () => setPage((p) => Math.min(totalPages - 1, p + 1));
 
-  // Distinguish between “no session” vs “empty data”
+  // Loading states
   if (loading || checkingSession) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center p-4">
@@ -299,33 +334,30 @@ export default function Viewer() {
               Upload a CSV file (or request assignment) to start reviewing PDFs.
             </p>
           </div>
-          <div className="flex justify-center gap-3">
-            <button
-              type="button"
-              onClick={() => navigate("/dashboard")}
-              className="px-6 py-3 bg-white text-black rounded-lg hover:bg-gray-200 transition-all font-semibold shadow-lg"
-            >
-              Go to Dashboard
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={() => navigate("/dashboard")}
+            className="px-6 py-3 bg-white text-black rounded-lg hover:bg-gray-200 transition-all font-semibold shadow-lg"
+          >
+            Go to Dashboard
+          </button>
         </div>
       </div>
     );
   }
 
-  // Session valid but zero rows:
   if (hasSession && data.length === 0) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center p-4">
         <div className="w-full max-w-lg text-center">
           <div className="mb-8">
             <div className="text-6xl mb-4">📄</div>
-            <h2 className="text-3xl font-bold mb-3 text-white">Empty Session</h2>
+            <h2 className="text-3xl font-bold text-white">Empty Session</h2>
             <p className="text-gray-400 text-lg">
-              Your uploaded file has 0 unique PDFs after duplicate filtering or data hasn’t loaded.
+              Your uploaded file has 0 items after filtering or data hasn’t loaded.
             </p>
             <p className="text-gray-500 text-sm mt-2">
-              Raw fetch count: {lastFetchCount}. If this seems wrong, re-upload or refresh.
+              Raw fetch count: {lastFetchCount}. Duplicates removed: {meta?.duplicates_removed ?? "—"}
             </p>
           </div>
           <div className="flex justify-center gap-3 flex-wrap">
@@ -346,7 +378,7 @@ export default function Viewer() {
           </div>
           {DIAGNOSTICS && (
             <pre className="mt-6 text-xs text-left bg-gray-900 p-3 rounded-lg text-gray-300 overflow-auto max-h-64">
-{JSON.stringify({ lastFetchCount, lastRawResponse }, null, 2)}
+{JSON.stringify({ lastFetchCount, lastRawResponse, meta }, null, 2)}
             </pre>
           )}
         </div>
@@ -354,17 +386,39 @@ export default function Viewer() {
     );
   }
 
+  const shownOriginal =
+    (typeof meta?.original_file_count === "number" ? meta?.original_file_count : undefined) ??
+    data.length;
+  const shownUnique =
+    (typeof meta?.unique_file_count === "number" ? meta?.unique_file_count : undefined) ??
+    data.length;
+
+  // Only show a numeric duplicatesRemoved if we could compute it; otherwise use "—"
+  const duplicatesRemovedVal =
+    typeof meta?.duplicates_removed === "number"
+      ? meta?.duplicates_removed
+      : (typeof meta?.original_file_count === "number" &&
+          typeof meta?.unique_file_count === "number" &&
+          meta!.original_file_count! >= meta!.unique_file_count!)
+      ? (meta!.original_file_count! - meta!.unique_file_count!)
+      : undefined;
+
   return (
     <div className="min-h-screen bg-black p-4 md:p-6 lg:p-8">
       <div className="max-w-7xl mx-auto">
-
         {/* Header */}
         <div className="mb-8 flex flex-col lg:flex-row items-start lg:items-center justify-between gap-6">
           <div>
             <h1 className="text-3xl md:text-4xl font-bold text-white mb-2">PDF Review Dashboard</h1>
             <p className="text-gray-400 text-sm">
-              Viewing {ITEMS_PER_PAGE} items per page • Total: {data.length}
+              Viewing {ITEMS_PER_PAGE} per page • Displayed: {data.length} • Original: {shownOriginal} • Unique: {shownUnique}
+              {` • Duplicates Removed: ${typeof duplicatesRemovedVal === "number" ? duplicatesRemovedVal : "—"}`}
             </p>
+            {meta?.include_duplicates && (
+              <p className="text-xs text-yellow-400 mt-1">
+                Duplicate rows included (annotated). within-file: {meta.within_file_duplicates} | global: {meta.global_duplicates}
+              </p>
+            )}
           </div>
           <div className="flex flex-wrap gap-2">
             <button
@@ -489,6 +543,7 @@ export default function Viewer() {
             const status = item.Status || "";
             const isAccepted = status === "Accepted";
             const isRejected = status === "Rejected";
+            const duplicateType = item.DuplicateType || "";
             const viewerSrc = `https://docs.google.com/gview?url=${encodeURIComponent(link)}&embedded=true`;
 
             return (
@@ -502,6 +557,17 @@ export default function Viewer() {
                     {verifierName && (
                       <span className="text-xs text-gray-400 font-medium">
                         by {verifierName}
+                      </span>
+                    )}
+                    {duplicateType && (
+                      <span
+                        className={`text-xs px-2 py-1 rounded-lg font-semibold ${
+                          duplicateType === 'within_file'
+                            ? 'bg-yellow-500/15 text-yellow-400 border border-yellow-400/30'
+                            : 'bg-orange-500/15 text-orange-300 border border-orange-400/30'
+                        }`}
+                      >
+                        {duplicateType.replace('_', ' ')}
                       </span>
                     )}
                   </div>
@@ -622,7 +688,7 @@ export default function Viewer() {
           <div className="bg-gray-950 border-2 border-gray-800 rounded-lg p-4 text-center">
             <div className="text-2xl font-bold text-white mb-1">{data.length}</div>
             <div className="text-xs text-gray-400 uppercase tracking-wide font-semibold">
-              Total Items
+              Displayed Items
             </div>
           </div>
           <div className="bg-gray-950 border-2 border-gray-800 rounded-lg p-4 text-center">
@@ -633,18 +699,18 @@ export default function Viewer() {
               Accepted
             </div>
           </div>
-            <div className="bg-gray-950 border-2 border-gray-800 rounded-lg p-4 text-center">
-              <div className="text-2xl font-bold text-white mb-1">
-                {data.filter((d) => d.Status === "Rejected").length}
-              </div>
-              <div className="text-xs text-gray-400 uppercase tracking-wide font-semibold">
-                Rejected
-              </div>
+          <div className="bg-gray-950 border-2 border-gray-800 rounded-lg p-4 text-center">
+            <div className="text-2xl font-bold text-white mb-1">
+              {data.filter((d) => d.Status === "Rejected").length}
             </div>
+            <div className="text-xs text-gray-400 uppercase tracking-wide font-semibold">
+              Rejected
+            </div>
+          </div>
           <div className="bg-gray-950 border-2 border-gray-800 rounded-lg p-4 text-center">
             <div className="text-2xl font-bold text-white mb-1">
               {data.filter((d) => {
-                const s = (d.Status ?? "").toString().trim().toLowerCase();
+                const s = (d.Status ?? "").trim().toLowerCase();
                 return s === "" || s === "pending";
               }).length}
             </div>
@@ -653,6 +719,44 @@ export default function Viewer() {
             </div>
           </div>
         </div>
+
+        {/* Meta statistics */}
+        {meta && (
+          <div className="mt-6 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+            <div className="bg-gray-950 border border-gray-800 rounded p-3 text-center">
+              <div className="text-lg font-bold text-white">{meta.original_file_count ?? "—"}</div>
+              <div className="text-xs text-gray-400 uppercase">Original</div>
+            </div>
+            <div className="bg-gray-950 border border-gray-800 rounded p-3 text-center">
+              <div className="text-lg font-bold text-white">{meta.unique_file_count ?? "—"}</div>
+              <div className="text-xs text-gray-400 uppercase">Unique</div>
+            </div>
+            <div className="bg-gray-950 border border-gray-800 rounded p-3 text-center">
+              <div className="text-lg font-bold text-white">
+                {meta.within_file_duplicates ?? "—"}
+              </div>
+              <div className="text-xs text-gray-400 uppercase">Within-File Dupes</div>
+            </div>
+            <div className="bg-gray-950 border border-gray-800 rounded p-3 text-center">
+              <div className="text-lg font-bold text-white">
+                {meta.global_duplicates ?? "—"}
+              </div>
+              <div className="text-xs text-gray-400 uppercase">Global Dupes</div>
+            </div>
+            <div className="bg-gray-950 border border-gray-800 rounded p-3 text-center">
+              <div className="text-lg font-bold text-white">
+                {typeof meta.duplicates_removed === "number" ? meta.duplicates_removed : "—"}
+              </div>
+              <div className="text-xs text-gray-400 uppercase">Removed</div>
+            </div>
+            <div className="bg-gray-950 border border-gray-800 rounded p-3 text-center">
+              <div className="text-lg font-bold text-white">
+                {meta.include_duplicates ? "Yes" : "No"}
+              </div>
+              <div className="text-xs text-gray-400 uppercase">Dupes Included</div>
+            </div>
+          </div>
+        )}
 
         {DIAGNOSTICS && (
           <div className="mt-8 p-4 bg-gray-900 border border-gray-800 rounded-lg text-xs text-gray-300 overflow-auto">
@@ -665,6 +769,7 @@ export default function Viewer() {
     lastFetchCount,
     activeVerifier,
     pendingOnly,
+    meta,
     dataPreview: data.slice(0, 3),
   },
   null,

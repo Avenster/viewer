@@ -22,5 +22,54 @@
     ],
     "created_at": "2025-11-17T12:39:07.755688",
     "created_by": "admin"
+  },
+  "0c0857c0-e8df-477b-91a7-7f09358e543a": {
+    "filename": "4621c3f1-d166-46b8-8985-4215335e44fb_data_sectors_-_hn.csv",
+    "file_hash": "0c7092f98bf51d063cc098e4a0c45d98",
+    "original_count": 21894,
+    "unique_count": 21894,
+    "duplicates_count": 3858,
+    "within_file_duplicates": 3858,
+    "global_duplicates": 0,
+    "duplicate_links": [],
+    "assignment_type": "percentage",
+    "assignments": [
+      {
+        "user_id": "ace8a272-b74a-4996-853a-59a6b8b71158",
+        "username": "rohit",
+        "name": "rohit",
+        "session_token": "IrDP2ba12N2GXdKXjuzTkZ_20ATSUR-DuIvDI6W8fVg",
+        "assigned_count": 21894,
+        "range": null,
+        "percentage": 100.0
+      }
+    ],
+    "created_at": "2025-11-17T16:42:52.948262",
+    "created_by": "admin"
+  },
+  "3c424bf4-9629-44cb-a73e-ea8243632f30": {
+    "filename": "59f7effc-7550-4d3e-acea-5fb1f2548faa_data_sectors_-_hn.csv",
+    "file_hash": "0c7092f98bf51d063cc098e4a0c45d98",
+    "original_count": 21894,
+    "unique_count": 21894,
+    "duplicates_count": 0,
+    "within_file_duplicates": 3858,
+    "global_duplicates": 18036,
+    "duplicate_links": [],
+    "assignment_type": "percentage",
+    "include_duplicates": true,
+    "assignments": [
+      {
+        "user_id": "ace8a272-b74a-4996-853a-59a6b8b71158",
+        "username": "rohit",
+        "name": "rohit",
+        "session_token": "qTWHqwkZrT1-pVfXPI4G1GDdzhqWs-Qlt3DhWhxM2Ig",
+        "assigned_count": 21894,
+        "range": null,
+        "percentage": 100.0
+      }
+    ],
+    "created_at": "2025-11-18T09:30:55.426344",
+    "created_by": "admin"
   }
 }
