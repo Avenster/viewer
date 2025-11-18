@@ -4,6 +4,9 @@ import json
 import atexit
 import secrets
 import hashlib
+import re
+import posixpath
+from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode, quote, unquote
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
@@ -199,6 +202,72 @@ def calculate_file_hash(filepath):
         print(f"[HASH ERROR] {e}")
         return None
 
+def canonicalize_link(url: str) -> str:
+    """
+    Normalize a URL so that visually different but equivalent links dedupe correctly.
+    - Lowercase scheme/host, remove default ports
+    - Collapse multiple slashes, normalize dot segments
+    - Strip fragments (#...)
+    - Remove common tracking params (utm_*, gclid, fbclid, ref, etc.)
+    - Prefer https
+    - Remove trailing slash after .pdf
+    """
+    u = str(url or '').strip().strip('\'"<>')
+    if not u:
+        return ''
+
+    # Add scheme if missing
+    if not re.match(r'^[a-zA-Z][a-zA-Z0-9+.-]*://', u):
+        u = 'http://' + u
+
+    parsed = urlparse(u)
+
+    scheme = parsed.scheme.lower()
+    netloc = parsed.netloc.lower()
+
+    # Remove default ports
+    if netloc.endswith(':80') and scheme == 'http':
+        netloc = netloc[:-3]
+    if netloc.endswith(':443') and scheme == 'https':
+        netloc = netloc[:-4]
+
+    # Normalize path: collapse slashes, resolve dot segments
+    path = re.sub(r'/+', '/', parsed.path or '')
+    path = unquote(path)
+    path = posixpath.normpath(path)
+    # Preserve trailing slash if it existed and normpath removed it
+    if parsed.path.endswith('/') and not path.endswith('/'):
+        path += '/'
+    # Re-quote path safely
+    path = quote(path, safe='/%._-')
+
+    # Strip fragment
+    fragment = ''
+
+    # Clean query: remove common tracking params and sort
+    tracking_prefixes = ('utm_',)
+    tracking_keys = {'gclid', 'fbclid', 'mc_eid', 'mc_cid', 'igshid', 'ref', 'ref_', 'spm', 'ved'}
+    q = []
+    for k, v in parse_qsl(parsed.query, keep_blank_values=True):
+        kl = k.lower()
+        if kl.startswith(tracking_prefixes) or kl in tracking_keys:
+            continue
+        q.append((kl, v))
+    q.sort()
+    query = urlencode(q, doseq=True)
+
+    canon = urlunparse((scheme, netloc, path, '', query, ''))
+
+    # Prefer https to improve dedupe between http/https
+    if canon.startswith('http://'):
+        canon = 'https://' + canon[len('http://'):]
+
+    # Remove trailing slash after .pdf
+    if canon.lower().endswith('.pdf/'):
+        canon = canon[:-1]
+
+    return canon
+
 def save_global_links():
     """Save global links database to file"""
     try:
@@ -224,30 +293,37 @@ def load_global_links():
         print(f"[GLOBAL LINKS] No existing global links database found")
 
 def check_global_duplicates(links_list):
-    """Check which links are duplicates globally and return detailed info"""
+    """Check which links are duplicates globally and return detailed info (uses canonicalization)"""
     global GLOBAL_LINKS
     within_file_dupes = []
     global_dupes = []
     new_links = []
-    seen_in_current = {}
-    for link in links_list:
-        link_clean = str(link).strip()
+    seen_in_current = set()
+
+    for raw_link in links_list:
+        link_clean = canonicalize_link(raw_link)
         if not link_clean:
             continue
+
+        # within-file duplicate detection (canonical)
         if link_clean in seen_in_current:
             within_file_dupes.append({"link": link_clean, "type": "within_file"})
             continue
-        seen_in_current[link_clean] = True
+        seen_in_current.add(link_clean)
+
+        # global duplicate detection (canonical)
         if link_clean in GLOBAL_LINKS:
+            meta = GLOBAL_LINKS[link_clean]
             global_dupes.append({
                 "link": link_clean,
-                "first_uploaded_by": GLOBAL_LINKS[link_clean]['first_uploaded_by'],
-                "first_uploaded_at": GLOBAL_LINKS[link_clean]['first_uploaded_at'],
-                "upload_count": GLOBAL_LINKS[link_clean]['upload_count'],
+                "first_uploaded_by": meta.get('first_uploaded_by'),
+                "first_uploaded_at": meta.get('first_uploaded_at'),
+                "upload_count": meta.get('upload_count', 1),
                 "type": "global_duplicate"
             })
         else:
             new_links.append(link_clean)
+
     return {
         "within_file_duplicates": within_file_dupes,
         "global_duplicates": global_dupes,
@@ -258,26 +334,30 @@ def check_global_duplicates(links_list):
     }
 
 def register_links_globally(links, username):
-    """Register new PDF links in global database"""
+    """Register new PDF links in global database (canonicalized)"""
     global GLOBAL_LINKS
     registered_count = 0
-    for link in links:
-        link_clean = str(link).strip()
+    now_iso = datetime.now().isoformat()
+
+    for raw_link in links:
+        link_clean = canonicalize_link(raw_link)
         if not link_clean:
             continue
+
         if link_clean in GLOBAL_LINKS:
-            GLOBAL_LINKS[link_clean]['upload_count'] += 1
+            GLOBAL_LINKS[link_clean]['upload_count'] = GLOBAL_LINKS[link_clean].get('upload_count', 1) + 1
             GLOBAL_LINKS[link_clean]['last_uploaded_by'] = username
-            GLOBAL_LINKS[link_clean]['last_uploaded_at'] = datetime.now().isoformat()
+            GLOBAL_LINKS[link_clean]['last_uploaded_at'] = now_iso
         else:
             GLOBAL_LINKS[link_clean] = {
                 "first_uploaded_by": username,
-                "first_uploaded_at": datetime.now().isoformat(),
+                "first_uploaded_at": now_iso,
                 "upload_count": 1,
                 "last_uploaded_by": username,
-                "last_uploaded_at": datetime.now().isoformat()
+                "last_uploaded_at": now_iso
             }
             registered_count += 1
+
     save_global_links()
     print(f"[GLOBAL LINKS] Registered {registered_count} new unique links for {username}")
     return registered_count
@@ -669,6 +749,7 @@ def upload_assign():
     Admin uploads CSV and assigns work to users.
     REQUIREMENT: Always de-duplicate before assignment so users never see duplicates.
     The 'include_duplicates' form flag (if sent by UI) is ignored.
+    Supports assigning any fraction of work (percentages sum can be <= 100).
     """
     try:
         # Check file
@@ -700,8 +781,8 @@ def upload_assign():
         # Prevent double assignments for users
         users_with_assignments = []
         for assignment in assignments:
-            user_id = assignment['userId']
-            if user_id not in USERS:
+            user_id = assignment.get('userId')
+            if not user_id or user_id not in USERS:
                 continue
             user = USERS[user_id]
             username = user['username']
@@ -738,30 +819,31 @@ def upload_assign():
         if link_col != 'link':
             df.rename(columns={link_col: 'link'}, inplace=True)
 
-        # Normalize links
-        df['link'] = df['link'].astype(str).str.strip()
+        # Normalize/Canonicalize links
+        df['link'] = df['link'].astype(str).apply(canonicalize_link)
+        # Remove empty links
+        df = df[df['link'].str.len() > 0].copy()
+
         original_count = len(df)
 
-        # Duplicate analysis using global store
+        # Duplicate analysis using global store (works with canonical links)
         dup_check = check_global_duplicates(df['link'].tolist())
         within_file_count = dup_check['within_file_count']
         global_dup_count = dup_check['global_duplicate_count']
         new_links_list = dup_check['new_links']
         total_duplicates_identified = within_file_count + global_dup_count
 
-        # Always keep only new unique links (de-dup)
+        # Keep only new unique links and drop any remaining within-file duplicates
         df_clean = df[df['link'].isin(new_links_list)].copy()
-        unique_count = len(df_clean)
-        duplicates_removed_count = original_count - unique_count
+        df_clean = df_clean.drop_duplicates(subset=['link'], keep='first')
+        unique_count_all = len(df_clean)
+        duplicates_removed_count = original_count - unique_count_all
 
-        if unique_count == 0:
+        if unique_count_all == 0:
             os.remove(filepath)
             return jsonify({
                 "error": "After de-duplication there are 0 unique links to assign. Please upload a different file."
             }), 400
-
-        # Register only the new links globally (no effect if none)
-        register_links_globally(new_links_list, "admin")
 
         # Prepare columns
         if 'Status' not in df_clean.columns:
@@ -771,12 +853,13 @@ def upload_assign():
 
         total_pdfs = len(df_clean)
         user_sessions = {}
+        assigned_total_count = 0
 
         if assignment_type == 'range':
             # Validate and ensure non-overlapping, within bounds, and non-empty
             used = set()
             for a in assignments:
-                user_id = a['userId']
+                user_id = a.get('userId')
                 if user_id not in USERS:
                     return jsonify({"error": "One or more selected users no longer exist"}), 400
                 start_range = int(a.get('startRange', 0))
@@ -823,7 +906,7 @@ def upload_assign():
                     "assigned_by_admin": True,
                     "assigned_count": len(user_df),
                     "assigned_range": f"{start_range}-{end_range}",
-                    # Store actual duplicates removed count
+                    # Store duplicates removed at file level
                     "duplicates_removed": duplicates_removed_count,
                     "duplicate_links": [],
                     "include_duplicates": include_duplicates
@@ -835,67 +918,80 @@ def upload_assign():
                     "data": user_df.to_dict('records'),
                     "range": f"{start_range}-{end_range}"
                 }
+                assigned_total_count += len(user_df)
+
+            # Register only the assigned links globally (canonicalized)
+            assigned_all_links = []
+            for sess in user_sessions.values():
+                assigned_all_links.extend([row['link'] for row in sess['data']])
+            register_links_globally(assigned_all_links, "admin")
 
         else:
-            # Percentage-based assignment: strong validation + fair rounding
-            if len(assignments) == 0:
-                return jsonify({"error": "No assignments provided"}), 400
-
-            # Validate percentages > 0 and sum to 100
-            total_pct = 0
+            # Percentage-based assignment: allow sum <= 100 (assign whatever admin wants)
+            # Filter out zero or missing percentages
+            cleaned = []
             for a in assignments:
                 pct = a.get('percentage', 0)
-                if pct is None:
-                    return jsonify({"error": "Each assignment must include 'percentage'"}), 400
                 try:
                     pct = float(pct)
                 except Exception:
                     return jsonify({"error": "Percentages must be numeric"}), 400
                 if pct <= 0:
-                    return jsonify({"error": "All percentages must be > 0"}), 400
+                    continue
                 a['percentage'] = pct
-                total_pct += pct
-            if round(total_pct) != 100:
-                return jsonify({"error": f"Total percentage must be 100 (got {total_pct})"}), 400
+                cleaned.append(a)
 
-            # Compute fair allocation using remainder distribution
-            alloc = []
-            remainder_list = []
+            if len(cleaned) == 0:
+                return jsonify({"error": "No positive percentages provided"}), 400
+
+            total_pct = sum(a['percentage'] for a in cleaned)
+            if total_pct > 100 + 1e-6:
+                return jsonify({"error": f"Total percentage cannot exceed 100 (got {total_pct})"}), 400
+
+            # Target number of PDFs to assign based on requested total percentage
+            target_total = floor(total_pdfs * (total_pct / 100.0))
+            if target_total <= 0:
+                return jsonify({"error": "Computed 0 PDFs to assign with given percentages. Increase percentages."}), 400
+
+            # Compute fair allocation limited to target_total (do NOT distribute leftover beyond requested total)
+            alloc = [0] * len(cleaned)
+            remainders = []
             base_sum = 0
-            for idx, a in enumerate(assignments):
+            for idx, a in enumerate(cleaned):
                 exact = total_pdfs * a['percentage'] / 100.0
                 base = floor(exact)
                 base_sum += base
-                alloc.append(base)
-                remainder_list.append((exact - base, idx))
-            leftover = total_pdfs - base_sum
-            remainder_list.sort(reverse=True)  # by remainder desc
+                alloc[idx] = base
+                remainders.append((exact - base, idx))
+            leftover = max(0, target_total - base_sum)
+            remainders.sort(reverse=True)  # by remainder desc
             i = 0
-            while leftover > 0 and i < len(remainder_list):
-                _, idx = remainder_list[i]
+            while leftover > 0 and i < len(remainders):
+                _, idx = remainders[i]
                 alloc[idx] += 1
                 leftover -= 1
                 i += 1
-            for idx, count in enumerate(alloc):
-                if count <= 0:
-                    name = USERS.get(assignments[idx]['userId'], {}).get('name', 'Unknown')
-                    return jsonify({"error": f"Computed 0 PDFs for {name} after rounding. Adjust percentages."}), 400
 
-            # Create user sessions
+            # Remove any assignments that ended up with 0 after rounding
+            final = [(idx, a, alloc[idx]) for idx, a in enumerate(cleaned) if alloc[idx] > 0]
+            if len(final) == 0:
+                return jsonify({"error": "After rounding, 0 PDFs were assigned. Adjust percentages."}), 400
+
+            # Create user sessions in order, slicing df_clean sequentially
             current_index = 0
-            for idx, a in enumerate(assignments):
+            for _, a, count in final:
                 user_id = a['userId']
                 if user_id not in USERS:
                     return jsonify({"error": "One or more selected users no longer exist"}), 400
                 user = USERS[user_id]
-                count = alloc[idx]
                 start_idx = current_index
                 end_idx = start_idx + count
                 user_df = df_clean.iloc[start_idx:end_idx].copy()
                 current_index = end_idx
 
                 if user_df.empty:
-                    return jsonify({"error": f"Computed 0 PDFs for {user['name']} with {a['percentage']}%"}), 400
+                    # This can occur if count becomes 0 after slicing or data exhausted
+                    continue
 
                 if 'Verified By' not in user_df.columns:
                     user_df['Verified By'] = user['name']
@@ -916,7 +1012,7 @@ def upload_assign():
                     "assigned_by_admin": True,
                     "assigned_count": len(user_df),
                     "assigned_percentage": a['percentage'],
-                    # Store actual duplicates removed count
+                    # Store duplicates removed at file level
                     "duplicates_removed": duplicates_removed_count,
                     "duplicate_links": [],
                     "include_duplicates": include_duplicates
@@ -928,6 +1024,18 @@ def upload_assign():
                     "data": user_df.to_dict('records'),
                     "percentage": a['percentage']
                 }
+                assigned_total_count += len(user_df)
+
+            # Register only the assigned links globally (canonicalized)
+            assigned_all_links = []
+            for sess in user_sessions.values():
+                assigned_all_links.extend([row['link'] for row in sess['data']])
+            if assigned_all_links:
+                register_links_globally(assigned_all_links, "admin")
+
+        if assigned_total_count == 0:
+            os.remove(filepath)
+            return jsonify({"error": "No rows were assigned after processing. Adjust ranges/percentages."}), 400
 
         # Persist work assignment meta
         assignment_id = str(uuid.uuid4())
@@ -935,7 +1043,8 @@ def upload_assign():
             "filename": unique_filename,
             "file_hash": file_hash,
             "original_count": original_count,
-            "unique_count": len(df_clean),  # what was actually distributed to users
+            # what was actually distributed to users (may be < unique_count_all if admin assigned partial)
+            "unique_count": assigned_total_count,
             "duplicates_count": duplicates_removed_count,
             "within_file_duplicates": within_file_count,
             "global_duplicates": global_dup_count,
@@ -960,7 +1069,7 @@ def upload_assign():
 
         save_sessions()
         save_work_assignments()
-        print(f"[ADMIN UPLOAD] ✅ Assigned to {len(user_sessions)} users | de-duplicated | orig={original_count} assigned={len(df_clean)} removed={duplicates_removed_count}")
+        print(f"[ADMIN UPLOAD] ✅ Assigned to {len(user_sessions)} users | de-duplicated | orig={original_count} assigned={assigned_total_count} unique_all={unique_count_all} removed={duplicates_removed_count}")
 
         return jsonify({
             "success": True,
@@ -968,7 +1077,8 @@ def upload_assign():
             "assignment_id": assignment_id,
             "assignment_type": assignment_type,
             "total_pdfs": original_count,
-            "unique_pdfs": len(df_clean),
+            "unique_pdfs_available": unique_count_all,
+            "assigned_pdfs": assigned_total_count,
             "duplicates_identified": total_duplicates_identified,
             "within_file_duplicates": within_file_count,
             "global_duplicates": global_dup_count,
@@ -1384,8 +1494,10 @@ def upload_csv():
         if link_col != 'link':
             df.rename(columns={link_col: 'link'}, inplace=True)
 
-        # Normalize links to string and strip
-        df['link'] = df['link'].astype(str).str.strip()
+        # Normalize/Canonicalize links to improve dedupe
+        df['link'] = df['link'].astype(str).apply(canonicalize_link)
+        # Remove empty links
+        df = df[df['link'].str.len() > 0].copy()
 
         original_count = len(df)
         all_links = df['link'].tolist()
@@ -1396,8 +1508,9 @@ def upload_csv():
         new_links_list = dup_check['new_links']
         total_duplicates = within_file_count + global_dup_count
 
-        # Default behavior: keep only new unique links
+        # Keep only new unique links and drop any remaining within-file duplicates
         df_clean = df[df['link'].isin(new_links_list)].copy()
+        df_clean = df_clean.drop_duplicates(subset=['link'], keep='first')
         unique_count = len(df_clean)
 
         # Fallback: if everything was filtered out, keep all original rows,
@@ -1409,6 +1522,7 @@ def upload_csv():
             global_set = set([d['link'] for d in dup_check['global_duplicates']])
 
             df_fallback = df.copy()
+
             def dup_type(l):
                 if l in within_set:
                     return 'within_file'
@@ -1418,8 +1532,10 @@ def upload_csv():
             df_fallback['DuplicateType'] = df_fallback['link'].apply(dup_type)
             df_clean = df_fallback  # keep everything so Viewer shows items
 
-        # Register only the new links globally (no effect if none)
-        register_links_globally(new_links_list, request.user['username'])
+        # Register only the new links globally (canonicalized)
+        # If fallback, only register the "new_links_list" (not duplicates)
+        to_register = df_clean['link'].tolist() if not all_duplicates_flag else new_links_list
+        register_links_globally(to_register, request.user['username'])
 
         # Ensure required columns
         if 'Status' not in df_clean.columns:
@@ -1442,7 +1558,7 @@ def upload_csv():
             "created_at": datetime.now().isoformat(),
             "expires_at": (datetime.now() + SESSION_TIMEOUT).isoformat(),
             "last_accessed": datetime.now().isoformat(),
-            "duplicates_removed": total_duplicates,
+            "duplicates_removed": (original_count - unique_count) if not all_duplicates_flag else (within_file_count + global_dup_count),
             "within_file_duplicates": within_file_count,
             "global_duplicates": global_dup_count,
             "duplicate_links": [],
@@ -1451,15 +1567,15 @@ def upload_csv():
 
         save_sessions()
 
-        print(f"[UPLOAD] ✅ New session by {request.user['username']}: unique={unique_count} original={original_count} dupes={total_duplicates} (fallback={all_duplicates_flag})")
+        print(f"[UPLOAD] ✅ New session by {request.user['username']}: unique={len(df_clean)} original={original_count} dupes={within_file_count + global_dup_count} (fallback={all_duplicates_flag})")
 
         return jsonify({
             "success": True,
             "message": "File uploaded successfully",
             "token": session_token,
-            "total": len(df_clean),  # what the Viewer will see
+            "total": len(df_clean),
             "unique_after_filter": unique_count,
-            "duplicates_removed": total_duplicates,
+            "duplicates_removed": (original_count - unique_count) if not all_duplicates_flag else (within_file_count + global_dup_count),
             "within_file_duplicates": within_file_count,
             "global_duplicates": global_dup_count,
             "original_count": original_count,
