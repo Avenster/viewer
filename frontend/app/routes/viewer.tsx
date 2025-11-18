@@ -73,7 +73,6 @@ export default function Viewer() {
 
     const derived: Meta = { ...metaIn };
 
-    // Prefer server value; otherwise compute from counts if available
     if (typeof derived.duplicates_removed !== "number") {
       const orig = typeof derived.original_file_count === "number" ? derived.original_file_count : undefined;
       const uniq = typeof derived.unique_file_count === "number" ? derived.unique_file_count : undefined;
@@ -81,7 +80,6 @@ export default function Viewer() {
       if (typeof orig === "number" && typeof uniq === "number") {
         derived.duplicates_removed = Math.max(orig - uniq, 0);
       } else if (typeof orig === "number") {
-        // Fallback: unique ≈ displayed
         derived.duplicates_removed = Math.max(orig - items.length, 0);
       } else if (
         typeof derived.within_file_duplicates === "number" &&
@@ -94,7 +92,6 @@ export default function Viewer() {
       }
     }
 
-    // If unique count not provided, use displayed count
     if (typeof derived.unique_file_count !== "number") {
       derived.unique_file_count = items.length;
     }
@@ -104,14 +101,46 @@ export default function Viewer() {
 
   // Load token at mount + storage events
   useEffect(() => {
-    const initial = localStorage.getItem(REVIEW_TOKEN_KEY);
-    if (initial) setSessionToken(initial);
+    // 1) Support ?token=... in the URL (upload flows can navigate to /viewer?token=XYZ)
+    const qpToken = new URL(window.location.href).searchParams.get("token");
+    if (qpToken) {
+      localStorage.setItem(REVIEW_TOKEN_KEY, qpToken);
+      setSessionToken(qpToken);
+    } else {
+      // 2) Fallback to whatever is in localStorage
+      const initial = localStorage.getItem(REVIEW_TOKEN_KEY);
+      if (initial) setSessionToken(initial);
+    }
+
+    // Keep in sync with other tabs
     const listener = (e: StorageEvent) => {
       if (e.key === REVIEW_TOKEN_KEY) setSessionToken(e.newValue);
     };
     window.addEventListener("storage", listener);
     return () => window.removeEventListener("storage", listener);
   }, []);
+
+  // If no session token found yet, try to fetch one from assigned work (as a recovery path)
+  useEffect(() => {
+    (async () => {
+      if (sessionToken) return;
+      const authToken = localStorage.getItem("auth_token");
+      if (!authToken) return;
+      try {
+        const res = await fetch(`${API_URL}/api/check-assigned-work`, {
+          headers: { "X-Auth-Token": authToken }
+        });
+        const json = await res.json().catch(() => ({}));
+        const assignedToken = json?.full_token || json?.session_token || json?.token;
+        if (json?.hasAssignedWork && assignedToken) {
+          localStorage.setItem(REVIEW_TOKEN_KEY, assignedToken);
+          setSessionToken(assignedToken);
+        }
+      } catch {
+        /* ignore */
+      }
+    })();
+  }, [sessionToken]);
 
   // Validate session when token changes
   useEffect(() => {
@@ -191,7 +220,6 @@ export default function Viewer() {
           })
           .filter(Boolean) as DataItem[];
 
-        // Accept meta if server provides; derive missing parts
         const incomingMeta: Meta | null = result.meta || null;
         const mergedMeta = deriveMeta(normalized, incomingMeta);
 
@@ -217,6 +245,12 @@ export default function Viewer() {
     async (verifier?: string | null) => {
       const { items, meta: fetchedMeta } = await fetchData(verifier);
       const filtered = applyPendingFilter(items);
+
+      // If the server says the session exists but returns 0 rows, guide the user
+      if (items.length === 0) {
+        setTransientMessage("No rows available for this session. If you just uploaded a CSV, ensure it had unique links and that the upload returned success.", 4000);
+      }
+
       setData(filtered);
       setMeta(fetchedMeta);
       setPage(0);
@@ -393,7 +427,6 @@ export default function Viewer() {
     (typeof meta?.unique_file_count === "number" ? meta?.unique_file_count : undefined) ??
     data.length;
 
-  // Only show a numeric duplicatesRemoved if we could compute it; otherwise use "—"
   const duplicatesRemovedVal =
     typeof meta?.duplicates_removed === "number"
       ? meta?.duplicates_removed
