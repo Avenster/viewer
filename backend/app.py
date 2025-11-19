@@ -5,6 +5,8 @@ import json
 import atexit
 import hashlib
 import difflib
+import zipfile
+import tempfile
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
@@ -21,6 +23,7 @@ USERS_FILE = os.environ.get("USERS_FILE", "users.json")
 GLOBAL_PDFS_META = os.environ.get("GLOBAL_PDFS_META", "global_pdfs.json")
 SESSION_EXPIRY_HOURS = int(os.environ.get("SESSION_EXPIRY_HOURS", "24"))
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
+NAME_SIMILARITY_DEFAULT = float(os.environ.get("NAME_SIMILARITY_THRESHOLD", "0.85"))
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(GLOBAL_PDF_FOLDER, exist_ok=True)
@@ -50,7 +53,6 @@ def load_json_file(path, default):
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except json.JSONDecodeError as e:
-        # Backup corrupted file and return default to avoid crash
         bak = f"{path}.bak"
         try:
             os.rename(path, bak)
@@ -70,12 +72,9 @@ def save_json_file(path, data):
         print(f"[SAVE_JSON] Failed save {path}: {e}")
 
 def load_sessions():
-    """Load sessions from disk into SESSIONS and clean expired ones."""
     global SESSIONS
     SESSIONS = load_json_file(SESSIONS_FILE, {})
     print(f"[SESSIONS] Loaded {len(SESSIONS)} sessions")
-    # Note: clean_expired_sessions is defined below; call later after definition
-    # (we'll call it explicitly after it's defined)
 
 def save_sessions():
     save_json_file(SESSIONS_FILE, SESSIONS)
@@ -100,14 +99,9 @@ def clean_expired_sessions():
     now = datetime.now()
     removed = []
     for token, session_data in list(SESSIONS.items()):
-        # existing code allowed session_data to be a str linking to csv, handle robustly
         if isinstance(session_data, str):
-            # if it's a raw path, treat it as expired if file missing
-            try:
-                # convert to proper object with expiry if needed
-                continue
-            except Exception:
-                continue
+            # legacy: string stored, leave it alone for now
+            continue
         try:
             expires_at = datetime.fromisoformat(session_data.get("expires_at", "2000-01-01"))
         except Exception:
@@ -125,13 +119,11 @@ def clean_expired_sessions():
         print(f"[CLEANUP] Removed {len(removed)} expired sessions")
         save_sessions()
 
-# Now that clean_expired_sessions is defined, register atexit and load data
+# register save on exit and initial loads (after clean_expired_sessions defined)
 atexit.register(save_sessions)
 atexit.register(save_users)
-# Load sessions & users and run cleanup
 load_sessions()
 load_users()
-# run cleanup now that function exists
 try:
     clean_expired_sessions()
 except Exception as e:
@@ -442,7 +434,7 @@ def upload_csv():
                 df = df.rename(columns={c: "Verified By"})
     if "Status" not in df.columns:
         df["Status"] = ""
-    if "Feedback" not in df.columns:
+    if "Feedback" not in df.columns():
         df["Feedback"] = ""
     if "Verified By" not in df.columns:
         df["Verified By"] = user["name"]
@@ -646,7 +638,7 @@ def download_csv():
 @app.route("/api/upload-pdf", methods=["POST"])
 @require_auth
 def upload_pdf():
-    NAME_SIMILARITY_THRESHOLD = float(os.environ.get("NAME_SIMILARITY_THRESHOLD", "0.85"))
+    NAME_SIMILARITY_THRESHOLD = float(os.environ.get("NAME_SIMILARITY_THRESHOLD", NAME_SIMILARITY_DEFAULT))
     if "pdf_file" not in request.files:
         return jsonify({"error": "No file uploaded (field name must be 'pdf_file')"}), 400
     pdf_file = request.files["pdf_file"]
@@ -658,12 +650,10 @@ def upload_pdf():
         file_bytes = pdf_file.read()
     except Exception as e:
         return jsonify({"error": f"Failed to read file: {e}"}), 400
-    if len(file_bytes) < 4 or not file_bytes.startswith(b"%PDF"):
-        header_ok = False
-    else:
-        header_ok = True
+    header_ok = len(file_bytes) >= 4 and file_bytes.startswith(b"%PDF")
     incoming_hash = compute_file_hash_bytes(file_bytes)
     meta = load_global_pdfs()
+    # 1) name similarity
     name_duplicates = []
     for entry in meta:
         sim = filename_similarity(original_filename, entry.get("original_name", entry.get("stored_name", "")))
@@ -679,6 +669,7 @@ def upload_pdf():
             "message": f"File appears duplicate by name (similarity={top['similarity']:.2f}).",
             "header_ok": header_ok
         }), 200
+    # 2) hash check
     hash_duplicates = [e for e in meta if e.get("sha256") == incoming_hash]
     if hash_duplicates:
         e = hash_duplicates[0]
@@ -689,6 +680,7 @@ def upload_pdf():
             "message": "File binary matches an existing PDF (same SHA256).",
             "header_ok": header_ok
         }), 200
+    # store file
     stored_name = f"{uuid.uuid4().hex}_{original_filename}"
     stored_path = os.path.join(GLOBAL_PDF_FOLDER, stored_name)
     try:
@@ -705,10 +697,14 @@ def upload_pdf():
         "uploaded_by": user.get("username"),
         "uploader_name": user.get("name"),
         "uploaded_at": datetime.now().isoformat(),
-        "size_bytes": len(file_bytes)
+        "size_bytes": len(file_bytes),
+        # status fields for review workflow
+        "status": "",           # "", "Accepted", "Rejected"
+        "feedback": ""
     }
     meta.append(entry)
     save_global_pdfs(meta)
+    # add to user's history (if exists)
     user_data = USERS.get(user["user_id"])
     if user_data is not None:
         if "global_uploads" not in user_data:
@@ -727,7 +723,8 @@ def upload_pdf():
             "original_name": entry["original_name"],
             "stored_name": entry["stored_name"],
             "sha256": entry["sha256"],
-            "uploaded_at": entry["uploaded_at"]
+            "uploaded_at": entry["uploaded_at"],
+            "status": entry["status"]
         },
         "header_ok": header_ok
     }), 201
@@ -747,7 +744,9 @@ def list_global_pdfs():
         "uploaded_by": e.get("uploaded_by"),
         "uploader_name": e.get("uploader_name"),
         "uploaded_at": e.get("uploaded_at"),
-        "size_bytes": e.get("size_bytes")
+        "size_bytes": e.get("size_bytes"),
+        "status": e.get("status", ""),
+        "feedback": e.get("feedback", "")
     } for e in meta]
     return jsonify({"items": safe, "total": len(safe)}), 200
 
@@ -765,6 +764,87 @@ def download_global_pdf(pdf_id):
         return send_file(path, as_attachment=True, download_name=entry.get("original_name", entry.get("stored_name")))
     except Exception as e:
         return jsonify({"error": f"Failed to send file: {e}"}), 500
+
+# ==========================
+# New: endpoints for per-user uploads, review, export
+# ==========================
+@app.route("/api/my-pdfs", methods=["GET"])
+@require_auth
+def my_pdfs():
+    """Return all PDFs uploaded by the current user (with status & feedback)."""
+    user = request.current_user
+    meta = load_global_pdfs()
+    items = [ {
+        "id": e.get("id"),
+        "original_name": e.get("original_name"),
+        "uploaded_at": e.get("uploaded_at"),
+        "size_bytes": e.get("size_bytes"),
+        "status": e.get("status", ""),
+        "feedback": e.get("feedback", ""),
+        "sha256": e.get("sha256")
+    } for e in meta if e.get("uploaded_by") == user.get("username")]
+    # sort descending uploaded_at
+    items = sorted(items, key=lambda x: x.get("uploaded_at", ""), reverse=True)
+    return jsonify({"items": items, "total": len(items)}), 200
+
+@app.route("/api/global-pdfs/<pdf_id>/status", methods=["POST"])
+@require_auth
+def set_pdf_status(pdf_id):
+    """
+    Body: { "status": "Accepted"|"Rejected", "feedback": "optional reason" }
+    Only uploader can change status for their file.
+    """
+    body = request.get_json(silent=True) or {}
+    status = body.get("status", "")
+    feedback = body.get("feedback", "")
+    if status not in ("Accepted", "Rejected", ""):
+        return jsonify({"error": "Invalid status"}), 400
+    user = request.current_user
+    meta = load_global_pdfs()
+    idx = next((i for i, e in enumerate(meta) if e.get("id") == pdf_id), None)
+    if idx is None:
+        return jsonify({"error": "Not found"}), 404
+    entry = meta[idx]
+    if entry.get("uploaded_by") != user.get("username"):
+        return jsonify({"error": "Forbidden - you are not the uploader"}), 403
+    # set status and feedback
+    entry["status"] = status
+    entry["feedback"] = feedback if status == "Rejected" else ""
+    meta[idx] = entry
+    save_global_pdfs(meta)
+    return jsonify({"message": "Status updated", "entry": {"id": pdf_id, "status": entry["status"], "feedback": entry["feedback"]}}), 200
+
+@app.route("/api/export-accepted", methods=["GET"])
+@require_auth
+def export_accepted():
+    """
+    Create a zip of accepted PDFs uploaded by the current user and send it.
+    """
+    user = request.current_user
+    meta = load_global_pdfs()
+    accepted = [e for e in meta if e.get("uploaded_by") == user.get("username") and e.get("status") == "Accepted"]
+    if not accepted:
+        return jsonify({"error": "No accepted PDFs found to export"}), 400
+    # create zip in temp file
+    try:
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+        tmp_name = tmp.name
+        tmp.close()
+        with zipfile.ZipFile(tmp_name, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for e in accepted:
+                path = e.get("path")
+                if path and os.path.exists(path):
+                    arcname = e.get("original_name") or e.get("stored_name")
+                    # Ensure unique names inside zip
+                    base = arcname
+                    counter = 1
+                    while arcname in zf.namelist():
+                        arcname = f"{os.path.splitext(base)[0]}_{counter}{os.path.splitext(base)[1]}"
+                        counter += 1
+                    zf.write(path, arcname=arcname)
+        return send_file(tmp_name, as_attachment=True, download_name=f"accepted_pdfs_{user['username']}.zip")
+    except Exception as e:
+        return jsonify({"error": f"Failed to create zip: {e}"}), 500
 
 # ==========================
 # health
