@@ -16,7 +16,7 @@ export default function Login() {
 
   useEffect(() => {
     if (isAuthenticated) {
-      navigate("/home");
+      navigate("/pdf");
     }
   }, [isAuthenticated, navigate]);
 
@@ -29,7 +29,7 @@ export default function Login() {
       if (isLogin) {
         const result = await login(username, password);
         if (result.success) {
-          navigate("/home");
+          navigate("/pdf");
         } else {
           setError(result.error || "Login failed");
         }
@@ -41,7 +41,7 @@ export default function Login() {
         }
         const result = await signup(username, email, password, name);
         if (result.success) {
-          navigate("/home");
+          navigate("/pdf");
         } else {
           setError(result.error || "Signup failed");
         }
