@@ -10,6 +10,25 @@
     "uploaded_at": "2025-11-19T13:11:09.263919",
     "size_bytes": 3474988,
     "status": "Accepted",
-    "feedback": ""
+    "feedback": "",
+    "assigned_to": "qc-team@gmail.com",
+    "assigned_at": "2025-11-19T17:17:11.701675",
+    "assigned_by": "admin"
+  },
+  {
+    "id": "4d998c6cf42b4ab184ba1eca812d92f4",
+    "original_name": "PELNOMOCNICTWO_v20220318.pdf",
+    "stored_name": "b3c3ebae99094fe587dfbe927339a146_PELNOMOCNICTWO_v20220318.pdf",
+    "path": "uploads/global_pdfs/b3c3ebae99094fe587dfbe927339a146_PELNOMOCNICTWO_v20220318.pdf",
+    "sha256": "d1a6ee1aa71ac12b99bb4efccdcd307b5e977047834b5cce073950fb794498f0",
+    "uploaded_by": "Avenster",
+    "uploader_name": "Ankur kaushal",
+    "uploaded_at": "2025-11-19T17:17:02.350147",
+    "size_bytes": 182761,
+    "status": "",
+    "feedback": "",
+    "assigned_to": "qc-team@gmail.com",
+    "assigned_at": "2025-11-19T17:17:14.960771",
+    "assigned_by": "admin"
   }
 ]

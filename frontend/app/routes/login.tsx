@@ -12,13 +12,21 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
 
   const navigate = useNavigate();
-  const { login, signup, isAuthenticated } = useAuth();
+  const { login, signup, verifyToken } = useAuth();
 
   useEffect(() => {
-    if (isAuthenticated) {
-      navigate("/pdf");
-    }
-  }, [isAuthenticated, navigate]);
+    // Only check for user token
+    (async () => {
+      const userToken = localStorage.getItem("auth_token_user");
+      if (userToken) {
+        const ok = await verifyToken(userToken);
+        if (ok) {
+          navigate("/pdf");
+        }
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -27,26 +35,26 @@ export default function Login() {
 
     try {
       if (isLogin) {
-        const result = await login(username, password);
-        if (result.success) {
-          navigate("/pdf");
-        } else {
+        const result = await login(username.trim(), password);
+        if (!result.success) {
           setError(result.error || "Login failed");
+          return;
         }
+        navigate("/pdf");
       } else {
         if (!email || !name) {
           setError("All fields are required");
-          setLoading(false);
           return;
         }
-        const result = await signup(username, email, password, name);
-        if (result.success) {
-          navigate("/pdf");
-        } else {
+        const result = await signup(username.trim(), email.trim(), password, name.trim());
+        if (!result.success) {
           setError(result.error || "Signup failed");
+          return;
         }
+        navigate("/pdf");
       }
     } catch (err) {
+      console.error(err);
       setError("An unexpected error occurred");
     } finally {
       setLoading(false);
@@ -73,9 +81,7 @@ export default function Login() {
                 setError("");
               }}
               className={`flex-1 py-2 px-4 rounded-lg font-medium transition-colors ${
-                isLogin
-                  ? "bg-white text-black"
-                  : "bg-gray-800 text-gray-400 hover:bg-gray-700"
+                isLogin ? "bg-white text-black" : "bg-gray-800 text-gray-400 hover:bg-gray-700"
               }`}
             >
               Login
@@ -87,9 +93,7 @@ export default function Login() {
                 setError("");
               }}
               className={`flex-1 py-2 px-4 rounded-lg font-medium transition-colors ${
-                !isLogin
-                  ? "bg-white text-black"
-                  : "bg-gray-800 text-gray-400 hover:bg-gray-700"
+                !isLogin ? "bg-white text-black" : "bg-gray-800 text-gray-400 hover:bg-gray-700"
               }`}
             >
               Sign Up
@@ -114,7 +118,7 @@ export default function Login() {
                   onChange={(e) => setName(e.target.value)}
                   className="w-full px-4 py-2.5 bg-black border border-gray-700 rounded-lg text-white focus:outline-none focus:border-gray-500 transition-colors"
                   placeholder="John Doe"
-                  required={!isLogin}
+                  required
                 />
               </div>
             )}
@@ -144,7 +148,7 @@ export default function Login() {
                   onChange={(e) => setEmail(e.target.value)}
                   className="w-full px-4 py-2.5 bg-black border border-gray-700 rounded-lg text-white focus:outline-none focus:border-gray-500 transition-colors"
                   placeholder="you@example.com"
-                  required={!isLogin}
+                  required
                 />
               </div>
             )}
@@ -152,7 +156,7 @@ export default function Login() {
             <div>
               <label className="block text-sm font-medium text-gray-300 mb-2">
                 Password
-              </label>
+                </label>
               <input
                 type="password"
                 value={password}
@@ -207,9 +211,7 @@ export default function Login() {
         </div>
 
         <div className="mt-6 text-center text-xs text-gray-500">
-          <p>
-            By continuing, you agree to our Terms of Service and Privacy Policy
-          </p>
+          <p>By continuing, you agree to our Terms of Service and Privacy Policy</p>
         </div>
       </div>
     </div>

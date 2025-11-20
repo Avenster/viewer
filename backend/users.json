@@ -5,8 +5,6 @@
     "email": "ankur@gmail.com",
     "name": "Ankur kaushal",
     "password_hash": "a31af7fd747816c31d09f29154d106d848faf9d722cc34d42a8222cbbc842700",
-    "auth_token": "4350dbbac2324140bc92b1026617857b",
-    "token_expires_at": "2025-12-19T13:03:44.704448",
     "created_at": "2025-11-19T13:03:44.704470",
     "upload_sessions": [],
     "global_uploads": [
@@ -14,8 +12,19 @@
         "id": "2a9f753badd94720b0b3d6aa5fbaf012",
         "original_name": "ESG_Report_2022_AR.pdf",
         "uploaded_at": "2025-11-19T13:11:09.263919"
+      },
+      {
+        "id": "4d998c6cf42b4ab184ba1eca812d92f4",
+        "original_name": "PELNOMOCNICTWO_v20220318.pdf",
+        "uploaded_at": "2025-11-19T17:17:02.350147"
       }
-    ]
+    ],
+    "last_login": "2025-11-19T17:31:15.350965",
+    "auth_tokens": {
+      "3d089bcca83b449d82ff4bae3bb288c0": "2025-12-19T17:00:39.861781",
+      "f6ee6dc466a748f486aa198245890184": "2025-12-19T17:31:01.616414",
+      "9c2c5f32b4684e81902941240d720c4c": "2025-12-19T17:31:15.350934"
+    }
   },
   "1aca8e8c13c34d14834030096b83a51d": {
     "user_id": "1aca8e8c13c34d14834030096b83a51d",
@@ -23,9 +32,41 @@
     "email": "nikhil@gmail.com",
     "name": "nikhil",
     "password_hash": "3b4ec9b6cecd8c199448f108d3978d711046b91269bae1606a00362a5772e724",
-    "auth_token": "e444b0f0f3464115a526c924dae2da84",
-    "token_expires_at": "2025-12-19T13:12:12.705441",
     "created_at": "2025-11-19T13:12:12.705459",
-    "upload_sessions": []
+    "upload_sessions": [],
+    "auth_tokens": {
+      "e444b0f0f3464115a526c924dae2da84": "2025-12-19T13:12:12.705441"
+    }
+  },
+  "06b97ff656c348c8b576b29d44972941": {
+    "user_id": "06b97ff656c348c8b576b29d44972941",
+    "username": "admin",
+    "email": "admin@example.com",
+    "name": "Administrator",
+    "role": "admin",
+    "password_hash": "240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9",
+    "created_at": "2025-11-19T16:27:50.218595",
+    "last_login": "2025-11-19T17:31:54.725711",
+    "auth_tokens": {
+      "27dc47ee87374eb392943e413438c300": "2025-12-19T16:33:12.098912",
+      "74b1fa3e0d9c4f86842b0bde51fe8ff5": "2025-12-19T16:50:51.924907",
+      "8291b5ba9ac54153adc042dd72e9145d": "2025-12-19T17:12:55.603476",
+      "996c98416847462ba6d911a9311c1e15": "2025-12-19T17:31:54.725695"
+    }
+  },
+  "470e921b45794e93ab3dba26a39782e6": {
+    "user_id": "470e921b45794e93ab3dba26a39782e6",
+    "username": "qc-team@gmail.com",
+    "email": "qc-team@gmail.com",
+    "name": "qc-team",
+    "role": "qc",
+    "password_hash": "2d734890e76e0ab18097e053be87df35649cb8673c8ca338d730231444d4e1b4",
+    "auth_tokens": {
+      "81e0500c055143d28c14e190ffc4cbe6": "2025-12-19T17:13:26.170340",
+      "fbb464ead492463cbbf0a40f9bbb98b2": "2025-12-19T17:13:26.177441",
+      "22944d387e6349779b87d36c22adeed4": "2025-12-19T17:33:57.770640"
+    },
+    "created_at": "2025-11-19T17:13:26.170397",
+    "last_login": "2025-11-19T17:33:57.770653"
   }
 }

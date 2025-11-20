@@ -1,4 +1,4 @@
-# app.py
+# app.py (with admin auto-create and multi-token support)
 import os
 import uuid
 import json
@@ -46,7 +46,6 @@ CORS(
 # Robust JSON persistence helpers
 # ==========================
 def load_json_file(path, default):
-    """Load JSON file; backup if corrupted and return default."""
     if not os.path.exists(path):
         return default
     try:
@@ -79,10 +78,34 @@ def load_sessions():
 def save_sessions():
     save_json_file(SESSIONS_FILE, SESSIONS)
 
+# ==========================
+# Note: load_users implements migration from legacy single-token format
+# to the new `auth_tokens` map (token -> expiry_iso). This keeps backwards
+# compatibility with existing users while enabling multiple concurrent tokens.
 def load_users():
     global USERS
-    USERS = load_json_file(USERS_FILE, {})
-    print(f"[USERS] Loaded {len(USERS)} users")
+    raw = load_json_file(USERS_FILE, {})
+    USERS = {}
+    for uid, u in raw.items():
+        if not isinstance(u, dict):
+            continue
+        # Migration: if legacy "auth_token" present, convert into "auth_tokens"
+        if u.get("auth_token") and not u.get("auth_tokens"):
+            token = u.get("auth_token")
+            expires = u.get("token_expires_at")
+            try:
+                if expires:
+                    _ = datetime.fromisoformat(expires)
+            except Exception:
+                expires = (datetime.now() + timedelta(days=30)).isoformat()
+            u["auth_tokens"] = {token: expires} if token else {}
+            u.pop("auth_token", None)
+            u.pop("token_expires_at", None)
+        # Ensure auth_tokens exists and is a dict
+        if "auth_tokens" not in u or not isinstance(u.get("auth_tokens"), dict):
+            u["auth_tokens"] = {}
+        USERS[uid] = u
+    print(f"[USERS] Loaded {len(USERS)} users (migrated auth token format)")
 
 def save_users():
     save_json_file(USERS_FILE, USERS)
@@ -94,13 +117,11 @@ def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
 def clean_expired_sessions():
-    """Remove expired sessions and delete their CSV files."""
     global SESSIONS
     now = datetime.now()
     removed = []
     for token, session_data in list(SESSIONS.items()):
         if isinstance(session_data, str):
-            # legacy: string stored, leave it alone for now
             continue
         try:
             expires_at = datetime.fromisoformat(session_data.get("expires_at", "2000-01-01"))
@@ -119,7 +140,6 @@ def clean_expired_sessions():
         print(f"[CLEANUP] Removed {len(removed)} expired sessions")
         save_sessions()
 
-# register save on exit and initial loads (after clean_expired_sessions defined)
 atexit.register(save_sessions)
 atexit.register(save_users)
 load_sessions()
@@ -130,8 +150,33 @@ except Exception as e:
     print(f"[CLEANUP] clean_expired_sessions failed during startup: {e}")
 
 # ==========================
-# Global PDFs metadata helpers
+# Ensure admin user exists (username: admin, password: admin123)
+def ensure_admin_exists():
+    # If there's already a user with username "admin", do nothing.
+    for u in USERS.values():
+        if u.get("username") == "admin":
+            print("[ADMIN] Existing 'admin' user found; skipping auto-create.")
+            return
+    # create admin user
+    user_id = uuid.uuid4().hex
+    USERS[user_id] = {
+        "user_id": user_id,
+        "username": "admin",
+        "email": "admin@example.com",
+        "name": "Administrator",
+        "role": "admin",
+        "password_hash": hash_password("admin123"),
+        "auth_tokens": {},   # new-style tokens map (empty initially)
+        "created_at": datetime.now().isoformat()
+    }
+    save_users()
+    print("[ADMIN] Created default admin account -> username: 'admin' password: 'admin123'")
+
+# call it now
+ensure_admin_exists()
+
 # ==========================
+# Global PDFs metadata helpers
 def load_global_pdfs():
     return load_json_file(GLOBAL_PDFS_META, [])
 
@@ -147,8 +192,7 @@ def filename_similarity(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, an, bn).ratio()
 
 # ==========================
-# CSV helpers (existing)
-# ==========================
+# CSV helpers
 def _read_csv_with_fallbacks(path: str) -> pd.DataFrame:
     encodings = ["utf-8-sig", "utf-8", "latin1", "cp1252"]
     for enc in encodings:
@@ -207,8 +251,7 @@ def _find_verified_column(df: pd.DataFrame):
     return None
 
 # ==========================
-# Auth helpers
-# ==========================
+# Auth helpers & roles (multi-token support)
 def get_auth_token_from_request():
     return request.headers.get("X-Auth-Token") or request.args.get("auth_token")
 
@@ -216,18 +259,22 @@ def verify_auth_token(token):
     if not token:
         return None
     for user_id, user_data in USERS.items():
-        if user_data.get("auth_token") == token:
+        tokens = user_data.get("auth_tokens", {}) or {}
+        expiry_iso = tokens.get(token)
+        if expiry_iso:
             try:
-                expires_at = datetime.fromisoformat(user_data.get("token_expires_at", "2000-01-01"))
+                expires_at = datetime.fromisoformat(expiry_iso)
             except Exception:
                 expires_at = datetime(2000,1,1)
             if datetime.now() > expires_at:
-                return None
+                # expired
+                continue
             return {
                 "user_id": user_id,
                 "username": user_data.get("username"),
                 "email": user_data.get("email"),
-                "name": user_data.get("name")
+                "name": user_data.get("name"),
+                "role": user_data.get("role", "user")
             }
     return None
 
@@ -241,6 +288,21 @@ def require_auth(f):
         return f(*args, **kwargs)
     decorated_function.__name__ = f.__name__
     return decorated_function
+
+def require_role(role):
+    def decorator(f):
+        def wrapped(*args, **kwargs):
+            token = get_auth_token_from_request()
+            user = verify_auth_token(token)
+            if not user:
+                return jsonify({"error": "Unauthorized"}), 401
+            if user.get("role") != role:
+                return jsonify({"error": "Forbidden - insufficient role"}), 403
+            request.current_user = user
+            return f(*args, **kwargs)
+        wrapped.__name__ = f.__name__
+        return wrapped
+    return decorator
 
 def get_session_from_request():
     token = request.headers.get("X-Session-Token") or request.args.get("token")
@@ -286,10 +348,65 @@ def get_session_from_request():
     return token, csv_path
 
 # ==========================
-# Auth routes
+# Auth routes (signup/login/logout) with multi-token support
+# new endpoint: /api/qc/signup
+@app.route("/api/qc/signup", methods=["POST"])
+def qc_signup():
+    """
+    Create a QC user.
+    Optional protection: set env var QC_SIGNUP_KEY to require a secret key in the body:
+      { username, email, password, name, signup_key }
+    If QC_SIGNUP_KEY is not set, signup is allowed (useful for dev).
+    """
+    body = request.get_json(silent=True) or {}
+    username = body.get("username", "").strip()
+    email = body.get("email", "").strip()
+    password = body.get("password", "")
+    name = body.get("name", "").strip()
+    provided_key = body.get("signup_key", "")
+
+    # optional protection
+    required_key = os.environ.get("QC_SIGNUP_KEY", "")
+    if required_key:
+        if not provided_key or provided_key != required_key:
+            return jsonify({"error": "Invalid signup key"}), 403
+
+    if not username or not email or not password or not name:
+        return jsonify({"error": "All fields are required"}), 400
+
+    # check duplicates
+    for u in USERS.values():
+        if u.get("username") == username or u.get("email") == email:
+            return jsonify({"error": "Username or email already exists"}), 400
+
+    user_id = uuid.uuid4().hex
+    auth_token = uuid.uuid4().hex
+    expires_at = (datetime.now() + timedelta(days=30)).isoformat()
+    USERS[user_id] = {
+        "user_id": user_id,
+        "username": username,
+        "email": email,
+        "name": name,
+        "role": "qc",
+        "password_hash": hash_password(password),
+        "auth_tokens": { auth_token: expires_at },
+        "created_at": datetime.now().isoformat()
+    }
+    save_users()
+    print(f"[QC-SIGNUP] QC user created: {username}")
+    return jsonify({
+        "message": "QC signup successful",
+        "auth_token": auth_token,
+        "user": {"user_id": user_id, "username": username, "name": name, "role": "qc"}
+    }), 201
+
 # ==========================
 @app.route("/api/auth/signup", methods=["POST"])
 def signup():
+    """
+    Public signup -> default role 'user'.
+    To create admin/qc programmatically use /api/admin/create-user (admin only).
+    """
     body = request.get_json(silent=True) or {}
     username = body.get("username", "").strip()
     email = body.get("email", "").strip()
@@ -304,19 +421,20 @@ def signup():
             return jsonify({"error": "Email already exists"}), 400
     user_id = uuid.uuid4().hex
     auth_token = uuid.uuid4().hex
+    expires_at = (datetime.now() + timedelta(days=30)).isoformat()
     USERS[user_id] = {
         "user_id": user_id,
         "username": username,
         "email": email,
         "name": name,
+        "role": "user",  # default role
         "password_hash": hash_password(password),
-        "auth_token": auth_token,
-        "token_expires_at": (datetime.now() + timedelta(days=30)).isoformat(),
+        "auth_tokens": { auth_token: expires_at },
         "created_at": datetime.now().isoformat(),
         "upload_sessions": []
     }
     save_users()
-    print(f"[SIGNUP] New user: {username} ({email})")
+    print(f"[SIGNUP] New user: {username} ({email}) role=user")
     return jsonify({
         "message": "Signup successful",
         "auth_token": auth_token,
@@ -324,7 +442,8 @@ def signup():
             "user_id": user_id,
             "username": username,
             "email": email,
-            "name": name
+            "name": name,
+            "role": "user"
         }
     }), 201
 
@@ -346,12 +465,16 @@ def login():
         return jsonify({"error": "Invalid credentials"}), 401
     if user_data.get("password_hash") != hash_password(password):
         return jsonify({"error": "Invalid credentials"}), 401
+
+    # create a new token and add to auth_tokens map (support multiple concurrent tokens)
     auth_token = uuid.uuid4().hex
-    user_data["auth_token"] = auth_token
-    user_data["token_expires_at"] = (datetime.now() + timedelta(days=30)).isoformat()
+    expires_at = (datetime.now() + timedelta(days=30)).isoformat()
+    tokens = user_data.get("auth_tokens", {}) or {}
+    tokens[auth_token] = expires_at
+    user_data["auth_tokens"] = tokens
     user_data["last_login"] = datetime.now().isoformat()
     save_users()
-    print(f"[LOGIN] User logged in: {username}")
+    print(f"[LOGIN] User logged in: {username} role={user_data.get('role','user')}")
     return jsonify({
         "message": "Login successful",
         "auth_token": auth_token,
@@ -359,7 +482,8 @@ def login():
             "user_id": user_id,
             "username": user_data.get("username"),
             "email": user_data.get("email"),
-            "name": user_data.get("name")
+            "name": user_data.get("name"),
+            "role": user_data.get("role", "user")
         }
     }), 200
 
@@ -375,17 +499,55 @@ def verify_auth():
 @require_auth
 def logout():
     token = get_auth_token_from_request()
+    if not token:
+        return jsonify({"error": "No token provided"}), 400
     for user_data in USERS.values():
-        if user_data.get("auth_token") == token:
-            user_data["auth_token"] = None
-            user_data["token_expires_at"] = None
-            save_users()
+        tokens = user_data.get("auth_tokens", {}) or {}
+        if token in tokens:
+            try:
+                tokens.pop(token, None)
+                user_data["auth_tokens"] = tokens
+                save_users()
+            except Exception as e:
+                print(f"[LOGOUT] failed removing token: {e}")
             break
     return jsonify({"message": "Logged out successfully"}), 200
 
+# New admin-only user creation (create admin or qc)
+@app.route("/api/admin/create-user", methods=["POST"])
+@require_role("admin")
+def admin_create_user():
+    body = request.get_json(silent=True) or {}
+    username = body.get("username", "").strip()
+    email = body.get("email", "").strip()
+    password = body.get("password", "")
+    name = body.get("name", "").strip()
+    role = body.get("role", "user").strip()
+    if role not in ("user", "admin", "qc"):
+        return jsonify({"error": "Invalid role"}), 400
+    if not username or not email or not password or not name:
+        return jsonify({"error": "All fields are required"}), 400
+    for u in USERS.values():
+        if u.get("username") == username or u.get("email") == email:
+            return jsonify({"error": "User exists"}), 400
+    user_id = uuid.uuid4().hex
+    auth_token = uuid.uuid4().hex
+    expires_at = (datetime.now() + timedelta(days=30)).isoformat()
+    USERS[user_id] = {
+        "user_id": user_id,
+        "username": username,
+        "email": email,
+        "name": name,
+        "role": role,
+        "password_hash": hash_password(password),
+        "auth_tokens": { auth_token: expires_at },
+        "created_at": datetime.now().isoformat()
+    }
+    save_users()
+    return jsonify({"message": "User created", "user": {"username": username, "role": role}, "auth_token": auth_token}), 201
+
 # ==========================
-# Existing CSV upload & session routes
-# ==========================
+# CSV upload & session routes (unchanged)
 @app.route("/api/upload", methods=["POST"])
 @require_auth
 def upload_csv():
@@ -434,7 +596,7 @@ def upload_csv():
                 df = df.rename(columns={c: "Verified By"})
     if "Status" not in df.columns:
         df["Status"] = ""
-    if "Feedback" not in df.columns():
+    if "Feedback" not in df.columns:
         df["Feedback"] = ""
     if "Verified By" not in df.columns:
         df["Verified By"] = user["name"]
@@ -599,42 +761,8 @@ def update_status():
         return jsonify({"error": f"Failed to save: {e}"}), 500
     return jsonify({"message": f"Marked as {canonical}"}), 200
 
-@app.route("/api/download", methods=["GET"])
-@require_auth
-def download_csv():
-    token, csv_path = get_session_from_request()
-    if not token or not csv_path or not os.path.exists(csv_path):
-        return jsonify({"error": "No CSV available"}), 401
-    try:
-        df = _read_csv_with_fallbacks(csv_path)
-        df, _ = _normalize_columns_and_get_link_column(df)
-        if "Status" in df.columns:
-            df["Status"] = df["Status"].apply(_normalize_status_value)
-        vcol = _find_verified_column(df)
-        if vcol and vcol != "Verified By":
-            df = df.rename(columns={vcol: "Verified By"})
-        if "link" in df.columns:
-            df = df.drop_duplicates(subset=["link"], keep="first")
-        temp_path = csv_path.replace(".csv", "_download.csv")
-        df.to_csv(temp_path, index=False, encoding="utf-8")
-        session_data = SESSIONS.get(token, {})
-        original_name = session_data.get("original_filename", "reviewed_results.csv")
-        download_name = f"reviewed_{original_name}"
-        response = send_file(temp_path, as_attachment=True, download_name=download_name)
-        @response.call_on_close
-        def cleanup():
-            try:
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-            except Exception:
-                pass
-        return response
-    except Exception as e:
-        return jsonify({"error": f"Download failed: {e}"}), 500
-
 # ==========================
-# New: PDF upload route with dedupe by name & hash
-# ==========================
+# PDF upload route with dedupe by name & hash
 @app.route("/api/upload-pdf", methods=["POST"])
 @require_auth
 def upload_pdf():
@@ -653,7 +781,6 @@ def upload_pdf():
     header_ok = len(file_bytes) >= 4 and file_bytes.startswith(b"%PDF")
     incoming_hash = compute_file_hash_bytes(file_bytes)
     meta = load_global_pdfs()
-    # 1) name similarity
     name_duplicates = []
     for entry in meta:
         sim = filename_similarity(original_filename, entry.get("original_name", entry.get("stored_name", "")))
@@ -669,7 +796,6 @@ def upload_pdf():
             "message": f"File appears duplicate by name (similarity={top['similarity']:.2f}).",
             "header_ok": header_ok
         }), 200
-    # 2) hash check
     hash_duplicates = [e for e in meta if e.get("sha256") == incoming_hash]
     if hash_duplicates:
         e = hash_duplicates[0]
@@ -680,7 +806,6 @@ def upload_pdf():
             "message": "File binary matches an existing PDF (same SHA256).",
             "header_ok": header_ok
         }), 200
-    # store file
     stored_name = f"{uuid.uuid4().hex}_{original_filename}"
     stored_path = os.path.join(GLOBAL_PDF_FOLDER, stored_name)
     try:
@@ -698,13 +823,15 @@ def upload_pdf():
         "uploader_name": user.get("name"),
         "uploaded_at": datetime.now().isoformat(),
         "size_bytes": len(file_bytes),
-        # status fields for review workflow
+        # review workflow fields
         "status": "",           # "", "Accepted", "Rejected"
-        "feedback": ""
+        "feedback": "",
+        "assigned_to": None,    # qc username
+        "assigned_at": None,
+        "assigned_by": None
     }
     meta.append(entry)
     save_global_pdfs(meta)
-    # add to user's history (if exists)
     user_data = USERS.get(user["user_id"])
     if user_data is not None:
         if "global_uploads" not in user_data:
@@ -731,7 +858,6 @@ def upload_pdf():
 
 # ==========================
 # List & download global PDFs
-# ==========================
 @app.route("/api/global-pdfs", methods=["GET"])
 @require_auth
 def list_global_pdfs():
@@ -746,7 +872,10 @@ def list_global_pdfs():
         "uploaded_at": e.get("uploaded_at"),
         "size_bytes": e.get("size_bytes"),
         "status": e.get("status", ""),
-        "feedback": e.get("feedback", "")
+        "feedback": e.get("feedback", ""),
+        "assigned_to": e.get("assigned_to"),
+        "assigned_at": e.get("assigned_at"),
+        "assigned_by": e.get("assigned_by")
     } for e in meta]
     return jsonify({"items": safe, "total": len(safe)}), 200
 
@@ -766,12 +895,10 @@ def download_global_pdf(pdf_id):
         return jsonify({"error": f"Failed to send file: {e}"}), 500
 
 # ==========================
-# New: endpoints for per-user uploads, review, export
-# ==========================
+# User-specific list & export
 @app.route("/api/my-pdfs", methods=["GET"])
 @require_auth
 def my_pdfs():
-    """Return all PDFs uploaded by the current user (with status & feedback)."""
     user = request.current_user
     meta = load_global_pdfs()
     items = [ {
@@ -781,19 +908,116 @@ def my_pdfs():
         "size_bytes": e.get("size_bytes"),
         "status": e.get("status", ""),
         "feedback": e.get("feedback", ""),
+        "assigned_to": e.get("assigned_to"),
         "sha256": e.get("sha256")
     } for e in meta if e.get("uploaded_by") == user.get("username")]
-    # sort descending uploaded_at
     items = sorted(items, key=lambda x: x.get("uploaded_at", ""), reverse=True)
     return jsonify({"items": items, "total": len(items)}), 200
 
-@app.route("/api/global-pdfs/<pdf_id>/status", methods=["POST"])
-@require_auth
-def set_pdf_status(pdf_id):
+# ==========================
+# Admin endpoints
+@app.route("/api/admin/global-pdfs", methods=["GET"])
+@require_role("admin")
+def admin_list_all_pdfs():
+    # same as list_global_pdfs but admin-only
+    meta = load_global_pdfs()
+    safe = [{
+        "id": e.get("id"),
+        "original_name": e.get("original_name"),
+        "stored_name": e.get("stored_name"),
+        "sha256": e.get("sha256"),
+        "uploaded_by": e.get("uploaded_by"),
+        "uploader_name": e.get("uploader_name"),
+        "uploaded_at": e.get("uploaded_at"),
+        "size_bytes": e.get("size_bytes"),
+        "status": e.get("status", ""),
+        "feedback": e.get("feedback", ""),
+        "assigned_to": e.get("assigned_to"),
+        "assigned_at": e.get("assigned_at"),
+        "assigned_by": e.get("assigned_by")
+    } for e in meta]
+    return jsonify({"items": safe, "total": len(safe)}), 200
+
+@app.route("/api/admin/assign", methods=["POST"])
+@require_role("admin")
+def admin_assign_pdf():
     """
-    Body: { "status": "Accepted"|"Rejected", "feedback": "optional reason" }
-    Only uploader can change status for their file.
+    Body: { "pdf_id": "...", "qc_username": "qc_user" }
     """
+    body = request.get_json(silent=True) or {}
+    pdf_id = body.get("pdf_id")
+    qc_username = body.get("qc_username")
+    if not pdf_id or not qc_username:
+        return jsonify({"error": "pdf_id and qc_username required"}), 400
+    meta = load_global_pdfs()
+    idx = next((i for i, e in enumerate(meta) if e.get("id") == pdf_id), None)
+    if idx is None:
+        return jsonify({"error": "Not found"}), 404
+    # verify qc user exists and role=qc
+    qc_user = next((u for u in USERS.values() if u.get("username") == qc_username and u.get("role") == "qc"), None)
+    if not qc_user:
+        return jsonify({"error": "QC user not found or not a QC role"}), 400
+    admin_user = request.current_user
+    entry = meta[idx]
+    entry["assigned_to"] = qc_username
+    entry["assigned_at"] = datetime.now().isoformat()
+    entry["assigned_by"] = admin_user.get("username")
+    meta[idx] = entry
+    save_global_pdfs(meta)
+    return jsonify({"message": "Assigned", "entry": {"id": pdf_id, "assigned_to": qc_username}}), 200
+
+@app.route("/api/admin/users", methods=["GET"])
+@require_role("admin")
+def admin_list_users():
+    # returns minimal user info
+    safe = [{"user_id": uid, "username": u.get("username"), "name": u.get("name"), "role": u.get("role")} for uid, u in USERS.items()]
+    return jsonify({"users": safe, "total": len(safe)}), 200
+
+@app.route("/api/admin/global-pdfs/<pdf_id>/status", methods=["POST"])
+@require_role("admin")
+def admin_update_status(pdf_id):
+    """
+    Admin can set status for any PDF.
+    Body: {status: "Accepted"|"Rejected", feedback: "..."}
+    """
+    body = request.get_json(silent=True) or {}
+    status = body.get("status", "")
+    feedback = body.get("feedback", "")
+    if status not in ("Accepted", "Rejected", ""):
+        return jsonify({"error": "Invalid status"}), 400
+    meta = load_global_pdfs()
+    idx = next((i for i, e in enumerate(meta) if e.get("id") == pdf_id), None)
+    if idx is None:
+        return jsonify({"error": "Not found"}), 404
+    entry = meta[idx]
+    entry["status"] = status
+    entry["feedback"] = feedback if status == "Rejected" else ""
+    meta[idx] = entry
+    save_global_pdfs(meta)
+    return jsonify({"message": "Status updated", "entry": {"id": pdf_id, "status": entry["status"], "feedback": entry["feedback"]}}), 200
+
+# ==========================
+# QC endpoints
+@app.route("/api/qc/tasks", methods=["GET"])
+@require_role("qc")
+def qc_tasks():
+    user = request.current_user
+    meta = load_global_pdfs()
+    tasks = [ {
+        "id": e.get("id"),
+        "original_name": e.get("original_name"),
+        "uploaded_by": e.get("uploaded_by"),
+        "uploaded_at": e.get("uploaded_at"),
+        "status": e.get("status", ""),
+        "feedback": e.get("feedback", ""),
+        "assigned_at": e.get("assigned_at")
+    } for e in meta if e.get("assigned_to") == user.get("username")]
+    tasks = sorted(tasks, key=lambda x: x.get("assigned_at") or "", reverse=True)
+    return jsonify({"items": tasks, "total": len(tasks)}), 200
+
+@app.route("/api/qc/<pdf_id>/status", methods=["POST"])
+@require_role("qc")
+def qc_update_status(pdf_id):
     body = request.get_json(silent=True) or {}
     status = body.get("status", "")
     feedback = body.get("feedback", "")
@@ -805,27 +1029,24 @@ def set_pdf_status(pdf_id):
     if idx is None:
         return jsonify({"error": "Not found"}), 404
     entry = meta[idx]
-    if entry.get("uploaded_by") != user.get("username"):
-        return jsonify({"error": "Forbidden - you are not the uploader"}), 403
-    # set status and feedback
+    if entry.get("assigned_to") != user.get("username"):
+        return jsonify({"error": "Forbidden - not assigned to you"}), 403
     entry["status"] = status
     entry["feedback"] = feedback if status == "Rejected" else ""
     meta[idx] = entry
     save_global_pdfs(meta)
     return jsonify({"message": "Status updated", "entry": {"id": pdf_id, "status": entry["status"], "feedback": entry["feedback"]}}), 200
 
+# ==========================
+# Export accepted PDFs (user)
 @app.route("/api/export-accepted", methods=["GET"])
 @require_auth
 def export_accepted():
-    """
-    Create a zip of accepted PDFs uploaded by the current user and send it.
-    """
     user = request.current_user
     meta = load_global_pdfs()
     accepted = [e for e in meta if e.get("uploaded_by") == user.get("username") and e.get("status") == "Accepted"]
     if not accepted:
         return jsonify({"error": "No accepted PDFs found to export"}), 400
-    # create zip in temp file
     try:
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
         tmp_name = tmp.name
@@ -835,7 +1056,6 @@ def export_accepted():
                 path = e.get("path")
                 if path and os.path.exists(path):
                     arcname = e.get("original_name") or e.get("stored_name")
-                    # Ensure unique names inside zip
                     base = arcname
                     counter = 1
                     while arcname in zf.namelist():
@@ -848,7 +1068,6 @@ def export_accepted():
 
 # ==========================
 # health
-# ==========================
 @app.route("/api/health", methods=["GET"])
 def health_check():
     return jsonify({"status": "healthy", "timestamp": datetime.now().isoformat()}), 200
