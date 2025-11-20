@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from "react";
 import { Search, Download, Filter, Users, FileText, CheckCircle, XCircle, Clock, AlertCircle } from "lucide-react";
 
-const API_URL = "http://13.201.123.132:5000";
+const API_URL = "http://localhost:5000";
 
 // Safe localStorage access function
-const getLocalStorage = (key: string): string | null => {
+const getLocalStorage = (key) => {
   if (typeof window === 'undefined') return null;
   try {
     return localStorage.getItem(key);
@@ -14,7 +14,7 @@ const getLocalStorage = (key: string): string | null => {
   }
 };
 
-const removeLocalStorage = (key: string): void => {
+const removeLocalStorage = (key) => {
   if (typeof window === 'undefined') return;
   try {
     localStorage.removeItem(key);
@@ -42,17 +42,22 @@ function pickTokenFromStorage() {
 }
 
 export default function AdminDashboard() {
-  const [allPdfs, setAllPdfs] = useState<any[]>([]);
-  const [qcs, setQcs] = useState<any[]>([]);
-  const [users, setUsers] = useState<any[]>([]);
+  const [allPdfs, setAllPdfs] = useState([]);
+  const [qcs, setQcs] = useState([]);
+  const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [actionLoading, setActionLoading] = useState<Record<string, boolean>>({});
-  const [message, setMessage] = useState<string | null>(null);
-  const [tokenToUse, setTokenToUse] = useState<string | null>(null);
-  const [selectedUser, setSelectedUser] = useState<string | null>(null);
+  const [actionLoading, setActionLoading] = useState({});
+  const [message, setMessage] = useState(null);
+  const [tokenToUse, setTokenToUse] = useState(null);
+  const [selectedUser, setSelectedUser] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [statusFilter, setStatusFilter] = useState("all");
   const [userSearchQuery, setUserSearchQuery] = useState("");
+
+  // Bulk selection states
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [bulkQCTarget, setBulkQCTarget] = useState("");
+  const [onlyUnassignedWhenAll, setOnlyUnassignedWhenAll] = useState(true);
 
   useEffect(() => {
     const token = pickTokenFromStorage();
@@ -95,7 +100,7 @@ export default function AdminDashboard() {
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
         setUsers(data.users || []);
-        const qclist = (data.users || []).filter((u:any) => u.role === "qc");
+        const qclist = (data.users || []).filter((u) => u.role === "qc");
         setQcs(qclist);
       } else {
         setMessage(`❌ ${data.error || res.statusText}`);
@@ -105,7 +110,7 @@ export default function AdminDashboard() {
     }
   }
 
-  async function assign(pdfId: string, qcUsername: string) {
+  async function assign(pdfId, qcUsername) {
     if (!tokenToUse) return;
     setActionLoading(s => ({...s, [pdfId]: true}));
     try {
@@ -125,7 +130,7 @@ export default function AdminDashboard() {
     } finally { setActionLoading(s => ({...s, [pdfId]: false})); }
   }
 
-  async function adminSetStatus(pdfId: string, status: "Accepted"|"Rejected", feedback = "") {
+  async function adminSetStatus(pdfId, status, feedback = "") {
     if (!tokenToUse) return;
     setActionLoading(s => ({...s, [pdfId]: true}));
     try {
@@ -145,7 +150,33 @@ export default function AdminDashboard() {
     } finally { setActionLoading(s => ({...s, [pdfId]: false})); }
   }
 
-  const buildOpenHref = (id: string) => {
+  // Bulk assign API call
+  async function bulkAssign({ pdf_ids = [], assign_all = false, qc_username, only_unassigned = true }) {
+    if (!tokenToUse) return;
+    if (!qc_username) { setMessage("❌ Select a QC user first"); return; }
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/api/admin/assign-multiple`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Auth-Token": tokenToUse },
+        body: JSON.stringify({ pdf_ids, qc_username, assign_all, only_unassigned })
+      });
+      const data = await res.json().catch(()=>({}));
+      if (res.ok) {
+        setMessage(`✅ Assigned ${data.assigned_count || 0} PDFs to ${qc_username}`);
+        clearSelection();
+        fetchAll();
+        setTimeout(()=>setMessage(null), 3000);
+      } else {
+        setMessage(`❌ ${data.error || res.statusText}`);
+      }
+    } catch (e) {
+      console.error(e);
+      setMessage("❌ Bulk assign failed");
+    } finally { setLoading(false); }
+  }
+
+  const buildOpenHref = (id) => {
     if (!tokenToUse) return `${API_URL}/api/global-pdfs/${id}`;
     return `${API_URL}/api/global-pdfs/${id}?auth_token=${encodeURIComponent(tokenToUse)}`;
   };
@@ -182,22 +213,21 @@ export default function AdminDashboard() {
     rejected: allPdfs.filter(p => p.status === "Rejected").length,
   };
 
-  const getStatusBadge = (item: any) => {
+  const getStatusBadge = (item) => {
     if (item.status === "Accepted") return <span className="px-2.5 py-1 bg-emerald-500/10 text-emerald-600 text-xs font-medium rounded-full flex items-center gap-1.5"><CheckCircle size={12} /> Accepted</span>;
     if (item.status === "Rejected") return <span className="px-2.5 py-1 bg-red-500/10 text-red-600 text-xs font-medium rounded-full flex items-center gap-1.5"><XCircle size={12} /> Rejected</span>;
     if (item.assigned_to) return <span className="px-2.5 py-1 bg-blue-500/10 text-blue-600 text-xs font-medium rounded-full flex items-center gap-1.5"><Clock size={12} /> In Review</span>;
     return <span className="px-2.5 py-1 bg-gray-500/10 text-gray-600 text-xs font-medium rounded-full flex items-center gap-1.5"><AlertCircle size={12} /> Pending</span>;
   };
 
-  // ---------- NEW: viewPdf using blob fetch ----------
-  // This only implements the preview behavior — everything else is unchanged.
-  async function viewPdf(pdfId: string) {
+  // ---------- viewPdf using blob fetch ----------
+  async function viewPdf(pdfId) {
     if (!tokenToUse) {
       setMessage("❌ No auth token available");
       return;
     }
     setActionLoading(s => ({ ...s, [pdfId]: true }));
-    let blobUrl: string | null = null;
+    let blobUrl = null;
 
     try {
       const res = await fetch(`${API_URL}/api/global-pdfs/${pdfId}`, {
@@ -260,6 +290,36 @@ export default function AdminDashboard() {
     }
   }
   // -------------------------------------------
+
+  // Bulk selection helpers
+  function toggleSelect(id) {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function clearSelection() {
+    setSelectedIds(new Set());
+  }
+
+  function selectAllVisible() {
+    const ids = new Set(filteredPdfs.map(p => p.id));
+    setSelectedIds(ids);
+  }
+
+  function toggleSelectAllVisible() {
+    const vis = filteredPdfs.map(p => p.id);
+    const allSelected = vis.every(id => selectedIds.has(id));
+    if (allSelected) clearSelection();
+    else {
+      const ids = new Set(selectedIds);
+      vis.forEach(id => ids.add(id));
+      setSelectedIds(ids);
+    }
+  }
 
   if (tokenToUse === null) {
     return (
@@ -452,6 +512,90 @@ export default function AdminDashboard() {
             </div>
           </div>
 
+          {/* Bulk Assign Controls - FIXED DESIGN */}
+          <div className="backdrop-blur-md bg-white border border-gray-200 rounded-2xl p-4 mb-6 shadow-sm">
+            <div className="flex items-center justify-between gap-4">
+              {/* Left side - Selection controls */}
+              <div className="flex items-center gap-3">
+                <input
+                  type="checkbox"
+                  checked={filteredPdfs.length > 0 && filteredPdfs.every(p => selectedIds.has(p.id))}
+                  onChange={toggleSelectAllVisible}
+                  className="w-4 h-4 rounded border-gray-300"
+                />
+                <span className="text-xs text-gray-700 font-medium">
+                  Select all visible ({filteredPdfs.length})
+                </span>
+                <button
+                  onClick={selectAllVisible}
+                  className="text-xs px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-full transition-colors"
+                >
+                  Select all
+                </button>
+                <button
+                  onClick={clearSelection}
+                  className="text-xs px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-full transition-colors"
+                >
+                  Clear
+                </button>
+                {selectedIds.size > 0 && (
+                  <span className="text-xs text-gray-600 ml-2">
+                    ({selectedIds.size} selected)
+                  </span>
+                )}
+              </div>
+
+              {/* Right side - Assignment controls */}
+              <div className="flex items-center gap-3">
+                <select
+                  value={bulkQCTarget}
+                  onChange={(e) => setBulkQCTarget(e.target.value)}
+                  className="px-3 py-2 bg-white border border-gray-300 rounded-full text-xs text-gray-700 focus:outline-none focus:ring-2 focus:ring-gray-400"
+                >
+                  <option value="">Choose QC...</option>
+                  {qcs.map(q => <option key={q.user_id} value={q.username}>{q.username} ({q.name})</option>)}
+                </select>
+
+                <button
+                  onClick={() => {
+                    if (!bulkQCTarget) { setMessage("❌ Select a QC user"); return; }
+                    if (selectedIds.size === 0) { setMessage("❌ No PDFs selected"); return; }
+                    if (!confirm(`Assign ${selectedIds.size} selected PDFs to ${bulkQCTarget}?`)) return;
+                    bulkAssign({ pdf_ids: Array.from(selectedIds), assign_all: false, qc_username: bulkQCTarget });
+                  }}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-full text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  disabled={loading}
+                >
+                  Assign Selected
+                </button>
+
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-gray-50 rounded-full border border-gray-200">
+                  <input 
+                    type="checkbox" 
+                    checked={onlyUnassignedWhenAll} 
+                    onChange={(e)=>setOnlyUnassignedWhenAll(e.target.checked)} 
+                    className="w-4 h-4 rounded border-gray-300"
+                  />
+                  <label className="text-xs text-gray-700 cursor-pointer select-none">
+                    Only unassigned
+                  </label>
+                </div>
+
+                <button
+                  onClick={() => {
+                    if (!bulkQCTarget) { setMessage("❌ Select a QC user"); return; }
+                    if (!confirm(`Assign ALL PDFs ${onlyUnassignedWhenAll ? "(only unassigned)" : "(including already assigned)"} to ${bulkQCTarget}?`)) return;
+                    bulkAssign({ assign_all: true, qc_username: bulkQCTarget, only_unassigned: onlyUnassignedWhenAll });
+                  }}
+                  className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-full text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  disabled={loading}
+                >
+                  Assign All
+                </button>
+              </div>
+            </div>
+          </div>
+
           {/* PDFs List */}
           {loading ? (
             <div className="backdrop-blur-md bg-black/5 border border-black/10 rounded-2xl p-12 text-center">
@@ -469,6 +613,12 @@ export default function AdminDashboard() {
                   <div className="flex justify-between gap-6">
                     <div className="flex-1">
                       <div className="flex items-center gap-3 mb-3">
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.has(item.id)}
+                          onChange={() => toggleSelect(item.id)}
+                          className="w-4 h-4"
+                        />
                         <FileText size={16} className="text-gray-400" />
                         <h3 className="text-sm font-semibold text-black">{item.original_name}</h3>
                         {getStatusBadge(item)}
@@ -499,7 +649,6 @@ export default function AdminDashboard() {
                     </div>
 
                     <div className="flex flex-col gap-2 items-end min-w-[200px]">
-                      {/* REPLACED: anchor -> blob-based preview button (keeps other logic same) */}
                       <button
                         onClick={() => viewPdf(item.id)}
                         className="flex items-center gap-2 text-xs text-black hover:text-gray-600 font-medium"

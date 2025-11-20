@@ -43,9 +43,9 @@
     "size_bytes": 195550,
     "status": "",
     "feedback": "",
-    "assigned_to": null,
-    "assigned_at": null,
-    "assigned_by": null
+    "assigned_to": "qc-team@gmail.com",
+    "assigned_at": "2025-11-20T19:12:42.248954",
+    "assigned_by": "admin"
   },
   {
     "id": "40300d8999754c9896b7e4eab5f1c6dd",
@@ -59,9 +59,9 @@
     "size_bytes": 202187,
     "status": "",
     "feedback": "",
-    "assigned_to": null,
-    "assigned_at": null,
-    "assigned_by": null
+    "assigned_to": "qc-team@gmail.com",
+    "assigned_at": "2025-11-20T19:12:42.248954",
+    "assigned_by": "admin"
   },
   {
     "id": "2a137184d5214720bc0edc884b363ddb",
@@ -75,9 +75,9 @@
     "size_bytes": 186989,
     "status": "",
     "feedback": "",
-    "assigned_to": null,
-    "assigned_at": null,
-    "assigned_by": null
+    "assigned_to": "qc-team@gmail.com",
+    "assigned_at": "2025-11-20T19:12:42.248954",
+    "assigned_by": "admin"
   },
   {
     "id": "71f8165036434f9489bc9edd18755db7",
@@ -91,9 +91,9 @@
     "size_bytes": 266345,
     "status": "",
     "feedback": "",
-    "assigned_to": null,
-    "assigned_at": null,
-    "assigned_by": null
+    "assigned_to": "qc-team@gmail.com",
+    "assigned_at": "2025-11-20T19:12:42.248954",
+    "assigned_by": "admin"
   },
   {
     "id": "fcb03530101f4cd0965e05c61e283348",
@@ -107,9 +107,9 @@
     "size_bytes": 204674,
     "status": "",
     "feedback": "",
-    "assigned_to": null,
-    "assigned_at": null,
-    "assigned_by": null
+    "assigned_to": "qc-team@gmail.com",
+    "assigned_at": "2025-11-20T19:12:42.248954",
+    "assigned_by": "admin"
   },
   {
     "id": "ecb043576ac9456e9f96db015ced77cc",
@@ -123,8 +123,8 @@
     "size_bytes": 167334,
     "status": "",
     "feedback": "",
-    "assigned_to": null,
-    "assigned_at": null,
-    "assigned_by": null
+    "assigned_to": "qc-team@gmail.com",
+    "assigned_at": "2025-11-20T19:12:42.248954",
+    "assigned_by": "admin"
   }
 ]

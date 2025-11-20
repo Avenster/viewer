@@ -22,7 +22,7 @@ SESSIONS_FILE = os.environ.get("SESSIONS_FILE", "sessions.json")
 USERS_FILE = os.environ.get("USERS_FILE", "users.json")
 GLOBAL_PDFS_META = os.environ.get("GLOBAL_PDFS_META", "global_pdfs.json")
 SESSION_EXPIRY_HOURS = int(os.environ.get("SESSION_EXPIRY_HOURS", "24"))
-FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://13.201.123.132:3000")
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
 NAME_SIMILARITY_DEFAULT = float(os.environ.get("NAME_SIMILARITY_THRESHOLD", "0.85"))
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -38,7 +38,7 @@ app = Flask(__name__)
 CORS(
     app,
     supports_credentials=False,
-    resources={r"/api/*": {"origins": [FRONTEND_URL, "http://13.201.123.132:3000"]}},
+    resources={r"/api/*": {"origins": [FRONTEND_URL, "http://localhost:5173"]}},
     allow_headers=["Content-Type", "X-Session-Token", "X-Auth-Token"],
 )
 
@@ -512,6 +512,57 @@ def logout():
                 print(f"[LOGOUT] failed removing token: {e}")
             break
     return jsonify({"message": "Logged out successfully"}), 200
+
+@app.route("/api/admin/assign-multiple", methods=["POST"])
+@require_role("admin")
+def admin_assign_multiple():
+    """
+    Body: {
+      "pdf_ids": ["id1","id2"],        # optional if assign_all True
+      "qc_username": "qc_user",        # required
+      "assign_all": false,             # optional, default false
+      "only_unassigned": true          # optional, default true when assign_all True
+    }
+    If assign_all is True, will assign all PDFs (or only unassigned if only_unassigned True).
+    """
+    body = request.get_json(silent=True) or {}
+    pdf_ids = body.get("pdf_ids") or []
+    qc_username = body.get("qc_username")
+    assign_all = bool(body.get("assign_all"))
+    only_unassigned = body.get("only_unassigned", True)
+
+    if not qc_username:
+        return jsonify({"error": "qc_username required"}), 400
+
+    # verify qc user exists and role=qc
+    qc_user = next((u for u in USERS.values() if u.get("username") == qc_username and u.get("role") == "qc"), None)
+    if not qc_user:
+        return jsonify({"error": "QC user not found or not a QC role"}), 400
+
+    meta = load_global_pdfs()
+    updated = []
+    now_iso = datetime.now().isoformat()
+    if assign_all:
+        for i, e in enumerate(meta):
+            if only_unassigned and e.get("assigned_to"):
+                continue
+            meta[i]["assigned_to"] = qc_username
+            meta[i]["assigned_at"] = now_iso
+            meta[i]["assigned_by"] = request.current_user.get("username")
+            updated.append(meta[i].get("id"))
+    else:
+        if not isinstance(pdf_ids, list) or not pdf_ids:
+            return jsonify({"error": "pdf_ids must be a non-empty list when assign_all is false"}), 400
+        id_set = set(pdf_ids)
+        for i, e in enumerate(meta):
+            if e.get("id") in id_set:
+                meta[i]["assigned_to"] = qc_username
+                meta[i]["assigned_at"] = now_iso
+                meta[i]["assigned_by"] = request.current_user.get("username")
+                updated.append(meta[i].get("id"))
+
+    save_global_pdfs(meta)
+    return jsonify({"message": "Assigned", "assigned_count": len(updated), "assigned_ids": updated}), 200
 
 # New admin-only user creation (create admin or qc)
 @app.route("/api/admin/create-user", methods=["POST"])

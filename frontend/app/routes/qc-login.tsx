@@ -3,7 +3,7 @@ import { useNavigate } from "react-router";
 import { useAuth } from "../components/AuthContext";
 import { CheckCircle, AlertCircle } from "lucide-react";
 
-const API_URL = (import.meta.env.VITE_API_URL as string) || "http://13.201.123.132:5000";
+const API_URL = (import.meta.env.VITE_API_URL as string) || "http://localhost:5000";
 
 export default function QcLogin() {
   const [isLogin, setIsLogin] = useState(true); // true = login, false = signup
