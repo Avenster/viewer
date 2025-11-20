@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router";
 import { useAuth } from "../components/AuthContext";
+import { Shield, AlertCircle } from "lucide-react";
 
 export default function AdminLogin() {
   const [username, setUsername] = useState("");
@@ -53,40 +54,50 @@ export default function AdminLogin() {
   };
 
   return (
-    <div className="min-h-screen bg-black flex items-center justify-center p-4">
+    <div className="min-h-screen bg-white flex items-center justify-center p-4">
       <div className="w-full max-w-md">
+        {/* Header */}
         <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold text-white mb-2">Admin Login</h1>
-          <p className="text-gray-400">Sign in with your admin credentials</p>
+          <div className="inline-flex items-center justify-center w-16 h-16 backdrop-blur-md bg-black/5 border border-black/10 rounded-full mb-4">
+            <Shield size={28} className="text-black" />
+          </div>
+          <h1 className="text-3xl font-bold text-black mb-2">Admin Login</h1>
+          <p className="text-sm text-gray-500">Sign in with your admin credentials</p>
         </div>
 
-        <div className="bg-gray-900 border border-gray-800 rounded-lg p-8">
+        {/* Login Card */}
+        <div className="backdrop-blur-md bg-black/5 border border-black/10 rounded-2xl p-8">
           {error && (
-            <div className="mb-4 p-3 bg-red-900/50 border border-red-700 rounded-lg text-red-200 text-sm">
-              {error}
+            <div className="mb-6 p-4 bg-red-500/10 border border-red-500/20 rounded-xl text-red-600 text-sm flex items-start gap-3">
+              <AlertCircle size={16} className="mt-0.5 flex-shrink-0" />
+              <span>{error}</span>
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSubmit} className="space-y-5">
             <div>
-              <label className="block text-sm font-medium text-gray-300 mb-2">Username or Email</label>
+              <label className="block text-xs font-semibold text-black mb-2">
+                Username or Email
+              </label>
               <input
                 type="text"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                className="w-full px-4 py-2.5 bg-black border border-gray-700 rounded-lg text-white"
-                placeholder="admin username or email"
+                className="w-full px-4 py-3 bg-white/50 border border-black/10 rounded-xl text-sm text-black placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-black/20 transition-all"
+                placeholder="Enter your username or email"
                 required
               />
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-300 mb-2">Password</label>
+              <label className="block text-xs font-semibold text-black mb-2">
+                Password
+              </label>
               <input
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full px-4 py-2.5 bg-black border border-gray-700 rounded-lg text-white"
+                className="w-full px-4 py-3 bg-white/50 border border-black/10 rounded-xl text-sm text-black placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-black/20 transition-all"
                 placeholder="••••••••"
                 required
                 minLength={6}
@@ -96,20 +107,33 @@ export default function AdminLogin() {
             <button
               type="submit"
               disabled={loading}
-              className="w-full py-3 bg-white text-black rounded-lg font-medium hover:bg-gray-200 disabled:bg-gray-700 disabled:text-gray-400"
+              className="w-full py-3 bg-black text-white rounded-full font-semibold text-sm hover:bg-gray-800 disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed transition-all"
             >
               {loading ? "Please wait..." : "Sign In as Admin"}
             </button>
           </form>
 
-          <div className="mt-6 text-center text-sm text-gray-400">
-            <p>
+          <div className="mt-6 pt-6 border-t border-black/10 text-center">
+            <p className="text-xs text-gray-500 mb-3">
               If you don't have an admin account, create one via the backend or ask an existing admin.
             </p>
-            <p className="mt-2">
-              Back to <a href="/login" className="underline">User Login</a> or <a href="/qc-login" className="underline">QC Login</a>.
-            </p>
+            <div className="flex items-center justify-center gap-2 text-xs">
+              <a href="/login" className="text-black hover:text-gray-600 font-medium transition-colors">
+                User Login
+              </a>
+              <span className="text-gray-300">•</span>
+              <a href="/qc-login" className="text-black hover:text-gray-600 font-medium transition-colors">
+                QC Login
+              </a>
+            </div>
           </div>
+        </div>
+
+        {/* Footer Note */}
+        <div className="mt-6 text-center">
+          <p className="text-xs text-gray-400">
+            Secure admin access • Protected by authentication
+          </p>
         </div>
       </div>
     </div>

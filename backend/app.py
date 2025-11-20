@@ -889,10 +889,23 @@ def download_global_pdf(pdf_id):
     path = entry.get("path")
     if not path or not os.path.exists(path):
         return jsonify({"error": "File not available on server"}), 404
+
+    # If client requests preview (e.g. ?preview=1 or ?preview=true), return inline.
+    preview = request.args.get("preview", "").lower()
+    inline = preview in ("1", "true", "yes")
+
     try:
-        return send_file(path, as_attachment=True, download_name=entry.get("original_name", entry.get("stored_name")))
+        # set mimetype to application/pdf so browsers know how to render
+        # send_file will set Content-Disposition: inline when as_attachment=False
+        return send_file(
+            path,
+            mimetype="application/pdf",
+            as_attachment=not inline,
+            download_name=entry.get("original_name", entry.get("stored_name"))
+        )
     except Exception as e:
         return jsonify({"error": f"Failed to send file: {e}"}), 500
+
 
 # ==========================
 # User-specific list & export

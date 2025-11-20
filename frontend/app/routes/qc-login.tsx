@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router";
 import { useAuth } from "../components/AuthContext";
+import { CheckCircle, AlertCircle } from "lucide-react";
 
 const API_URL = (import.meta.env.VITE_API_URL as string) || "http://13.201.123.132:5000";
 
@@ -107,59 +108,82 @@ export default function QcLogin() {
   };
 
   return (
-    <div className="min-h-screen bg-black flex items-center justify-center p-4">
+    <div className="min-h-screen bg-white flex items-center justify-center p-4">
       <div className="w-full max-w-md">
+        {/* Header */}
         <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold text-white mb-2">QC Portal</h1>
-          <p className="text-gray-400">{isLogin ? "Sign in to continue" : "Create your QC account"}</p>
+          <div className="inline-flex items-center justify-center w-16 h-16 backdrop-blur-md bg-black/5 border border-black/10 rounded-full mb-4">
+            <CheckCircle size={28} className="text-black" />
+          </div>
+          <h1 className="text-3xl font-bold text-black mb-2">QC Portal</h1>
+          <p className="text-sm text-gray-500">
+            {isLogin ? "Sign in to continue" : "Create your QC account"}
+          </p>
         </div>
 
-        <div className="bg-gray-900 border border-gray-800 rounded-lg p-8">
+        {/* Login/Signup Card */}
+        <div className="backdrop-blur-md bg-black/5 border border-black/10 rounded-2xl p-8">
+          {/* Toggle Tabs */}
           <div className="flex gap-2 mb-6">
             <button
               type="button"
               onClick={() => { setIsLogin(true); setError(""); }}
-              className={`flex-1 py-2 px-4 rounded-lg font-medium transition-colors ${isLogin ? "bg-white text-black" : "bg-gray-800 text-gray-400"}`}
+              className={`flex-1 py-2.5 px-4 rounded-full font-semibold text-sm transition-all ${
+                isLogin 
+                  ? "bg-black text-white" 
+                  : "bg-white/50 text-gray-600 hover:bg-white/80"
+              }`}
             >
               Login
             </button>
             <button
               type="button"
               onClick={() => { setIsLogin(false); setError(""); }}
-              className={`flex-1 py-2 px-4 rounded-lg font-medium transition-colors ${!isLogin ? "bg-white text-black" : "bg-gray-800 text-gray-400"}`}
+              className={`flex-1 py-2.5 px-4 rounded-full font-semibold text-sm transition-all ${
+                !isLogin 
+                  ? "bg-black text-white" 
+                  : "bg-white/50 text-gray-600 hover:bg-white/80"
+              }`}
             >
               Sign Up
             </button>
           </div>
 
+          {/* Error Message */}
           {error && (
-            <div className="mb-4 p-3 bg-red-900/50 border border-red-700 rounded-lg text-red-200 text-sm">
-              {error}
+            <div className="mb-6 p-4 bg-red-500/10 border border-red-500/20 rounded-xl text-red-600 text-sm flex items-start gap-3">
+              <AlertCircle size={16} className="mt-0.5 flex-shrink-0" />
+              <span>{error}</span>
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="space-y-4">
+          {/* Form Fields */}
+          <form onSubmit={handleSubmit} className="space-y-5">
             {!isLogin && (
               <>
                 <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-2">Full Name</label>
+                  <label className="block text-xs font-semibold text-black mb-2">
+                    Full Name
+                  </label>
                   <input
                     type="text"
                     value={name}
                     onChange={(e) => setName(e.target.value)}
-                    className="w-full px-4 py-2.5 bg-black border border-gray-700 rounded-lg text-white"
+                    className="w-full px-4 py-3 bg-white/50 border border-black/10 rounded-xl text-sm text-black placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-black/20 transition-all"
                     placeholder="Your full name"
                     required
                   />
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-2">Email</label>
+                  <label className="block text-xs font-semibold text-black mb-2">
+                    Email
+                  </label>
                   <input
                     type="email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    className="w-full px-4 py-2.5 bg-black border border-gray-700 rounded-lg text-white"
+                    className="w-full px-4 py-3 bg-white/50 border border-black/10 rounded-xl text-sm text-black placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-black/20 transition-all"
                     placeholder="you@company.com"
                     required
                   />
@@ -168,24 +192,28 @@ export default function QcLogin() {
             )}
 
             <div>
-              <label className="block text-sm font-medium text-gray-300 mb-2">Username {isLogin && "or Email"}</label>
+              <label className="block text-xs font-semibold text-black mb-2">
+                Username {isLogin && "or Email"}
+              </label>
               <input
                 type="text"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                className="w-full px-4 py-2.5 bg-black border border-gray-700 rounded-lg text-white"
+                className="w-full px-4 py-3 bg-white/50 border border-black/10 rounded-xl text-sm text-black placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-black/20 transition-all"
                 placeholder={isLogin ? "username or email" : "username"}
                 required
               />
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-300 mb-2">Password</label>
+              <label className="block text-xs font-semibold text-black mb-2">
+                Password
+              </label>
               <input
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full px-4 py-2.5 bg-black border border-gray-700 rounded-lg text-white"
+                className="w-full px-4 py-3 bg-white/50 border border-black/10 rounded-xl text-sm text-black placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-black/20 transition-all"
                 placeholder="••••••••"
                 required
                 minLength={6}
@@ -194,31 +222,53 @@ export default function QcLogin() {
 
             {!isLogin && (
               <div>
-                <label className="block text-sm font-medium text-gray-300 mb-2">Signup Key (optional)</label>
+                <label className="block text-xs font-semibold text-black mb-2">
+                  Signup Key <span className="font-normal text-gray-500">(optional)</span>
+                </label>
                 <input
                   type="text"
                   value={signupKey}
                   onChange={(e) => setSignupKey(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-black border border-gray-700 rounded-lg text-white"
+                  className="w-full px-4 py-3 bg-white/50 border border-black/10 rounded-xl text-sm text-black placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-black/20 transition-all"
                   placeholder="If your org requires a signup key"
                 />
-                <div className="text-xs text-gray-400 mt-1">Leave empty if no key is required by server.</div>
+                <p className="text-xs text-gray-500 mt-2">
+                  Leave empty if no key is required by server
+                </p>
               </div>
             )}
 
             <button
               type="submit"
               disabled={loading}
-              className="w-full py-3 bg-white text-black rounded-lg font-medium hover:bg-gray-200 disabled:bg-gray-700 disabled:text-gray-400"
+              className="w-full py-3 bg-black text-white rounded-full font-semibold text-sm hover:bg-gray-800 disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed transition-all"
             >
               {loading ? "Please wait..." : isLogin ? "Sign In as QC" : "Create QC Account"}
             </button>
           </form>
 
-          <div className="mt-6 text-center text-sm text-gray-400">
-            <p>QC accounts are managed by admins or self-register (if enabled).</p>
-            <p className="mt-2">Back to <a href="/login" className="underline">User Login</a> or <a href="/admin-login" className="underline">Admin Login</a>.</p>
+          {/* Footer Links */}
+          <div className="mt-6 pt-6 border-t border-black/10 text-center">
+            <p className="text-xs text-gray-500 mb-3">
+              QC accounts are managed by admins or self-register (if enabled)
+            </p>
+            <div className="flex items-center justify-center gap-2 text-xs">
+              <a href="/login" className="text-black hover:text-gray-600 font-medium transition-colors">
+                User Login
+              </a>
+              <span className="text-gray-300">•</span>
+              <a href="/admin-login" className="text-black hover:text-gray-600 font-medium transition-colors">
+                Admin Login
+              </a>
+            </div>
           </div>
+        </div>
+
+        {/* Footer Note */}
+        <div className="mt-6 text-center">
+          <p className="text-xs text-gray-400">
+            Quality control access • Secure authentication
+          </p>
         </div>
       </div>
     </div>
