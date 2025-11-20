@@ -22,7 +22,7 @@ SESSIONS_FILE = os.environ.get("SESSIONS_FILE", "sessions.json")
 USERS_FILE = os.environ.get("USERS_FILE", "users.json")
 GLOBAL_PDFS_META = os.environ.get("GLOBAL_PDFS_META", "global_pdfs.json")
 SESSION_EXPIRY_HOURS = int(os.environ.get("SESSION_EXPIRY_HOURS", "24"))
-FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://13.201.123.132:3000")
 NAME_SIMILARITY_DEFAULT = float(os.environ.get("NAME_SIMILARITY_THRESHOLD", "0.85"))
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)

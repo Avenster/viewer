@@ -12,7 +12,7 @@ interface DataItem {
   [key: string]: any;
 }
 
-const API_URL = (import.meta.env.VITE_API_URL as string) || "http://localhost:5000";
+const API_URL = (import.meta.env.VITE_API_URL as string) || "http://13.201.123.132:5000";
 
 export default function Viewer() {
   const [data, setData] = useState<DataItem[]>([]);
