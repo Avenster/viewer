@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Search, Download, Filter, Users, FileText, CheckCircle, XCircle, Clock, AlertCircle } from "lucide-react";
 
-const API_URL = "http://localhost:5000";
+const API_URL = "http://13.201.123.132:5000";
 
 // Safe localStorage access function
 const getLocalStorage = (key) => {

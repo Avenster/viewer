@@ -4,7 +4,7 @@ import { useNavigate } from "react-router";
 import { useAuth } from "../components/AuthContext";
 import { Home, LogOut, RefreshCw, FileText, CheckCircle, XCircle, Clock, AlertCircle, ChevronLeft, ChevronRight, ExternalLink } from "lucide-react";
 
-const API_URL = (import.meta.env.VITE_API_URL as string) || "http://localhost:5000";
+const API_URL = (import.meta.env.VITE_API_URL as string) || "http://13.201.123.132:5000";
 
 const getLocalStorage = (key: string): string | null => {
   if (typeof window === "undefined") return null;
