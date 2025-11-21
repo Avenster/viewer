@@ -22,7 +22,7 @@ SESSIONS_FILE = os.environ.get("SESSIONS_FILE", "sessions.json")
 USERS_FILE = os.environ.get("USERS_FILE", "users.json")
 GLOBAL_PDFS_META = os.environ.get("GLOBAL_PDFS_META", "global_pdfs.json")
 SESSION_EXPIRY_HOURS = int(os.environ.get("SESSION_EXPIRY_HOURS", "24"))
-FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://13.201.123.132:3000")
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
 NAME_SIMILARITY_DEFAULT = float(os.environ.get("NAME_SIMILARITY_THRESHOLD", "0.85"))
 
 # PDF language options
@@ -40,11 +40,10 @@ app = Flask(__name__)
 # CORS: allow frontends
 CORS(
     app,
+    resources={r"/api/*": {"origins": "*"}},
     supports_credentials=False,
-    resources={r"/api/*": {"origins": [FRONTEND_URL, "http://13.201.123.132:3000"]}},
     allow_headers=["Content-Type", "X-Session-Token", "X-Auth-Token"],
 )
-
 # ==========================
 # Robust JSON persistence helpers
 # ==========================
