@@ -1,10 +1,11 @@
-// QcDashboardInlinePreview.tsx
 import React, { useEffect, useState, useRef } from "react";
 import { useNavigate } from "react-router";
 import { useAuth } from "../components/AuthContext";
-import { Home, LogOut, RefreshCw, FileText, CheckCircle, XCircle, Clock, AlertCircle, ChevronLeft, ChevronRight, ExternalLink } from "lucide-react";
+import { Home, LogOut, RefreshCw, FileText, CheckCircle, XCircle, Clock, AlertCircle, ChevronLeft, ChevronRight, ExternalLink, Filter, X } from "lucide-react";
 
 const API_URL = (import.meta.env.VITE_API_URL as string) || "http://13.201.123.132:5000";
+
+const PDF_LANGUAGES = ["Japanese", "Hindi", "Russian", "Polish", "Arabic", "German"];
 
 const getLocalStorage = (key: string): string | null => {
   if (typeof window === "undefined") return null;
@@ -42,10 +43,18 @@ export default function QcDashboardInlinePreview() {
   const navigate = useNavigate();
 
   const [tasks, setTasks] = useState<any[]>([]);
+  const [filteredTasks, setFilteredTasks] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState<Record<string, boolean>>({});
   const [message, setMessage] = useState<string | null>(null);
   const [tokenToUse, setTokenToUse] = useState<string | null>(null);
+
+  // Language filter state
+  const [selectedLanguages, setSelectedLanguages] = useState<string[]>([]);
+  const [showLanguageFilter, setShowLanguageFilter] = useState(false);
+
+  // Status filter state
+  const [selectedStatus, setSelectedStatus] = useState<string>("all");
 
   // preview state
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -76,8 +85,32 @@ export default function QcDashboardInlinePreview() {
         previewUrlRef.current = null;
       }
     };
-    // eslint-disable-next-line
   }, [isAuthenticated, tokenToUse]);
+
+  // Apply filters whenever tasks, selectedLanguages, or selectedStatus change
+  useEffect(() => {
+    let filtered = [...tasks];
+
+    // Language filter
+    if (selectedLanguages.length > 0) {
+      filtered = filtered.filter(t => 
+        selectedLanguages.includes(t.language || "")
+      );
+    }
+
+    // Status filter
+    if (selectedStatus !== "all") {
+      if (selectedStatus === "pending") {
+        filtered = filtered.filter(t => !t.status || t.status === "");
+      } else if (selectedStatus === "accepted") {
+        filtered = filtered.filter(t => t.status === "Accepted");
+      } else if (selectedStatus === "rejected") {
+        filtered = filtered.filter(t => t.status === "Rejected");
+      }
+    }
+
+    setFilteredTasks(filtered);
+  }, [tasks, selectedLanguages, selectedStatus]);
 
   async function fetchTasks() {
     if (!tokenToUse) return;
@@ -141,8 +174,8 @@ export default function QcDashboardInlinePreview() {
       setMessage("❌ No auth token available");
       return;
     }
-    if (!tasks || !tasks[idx]) return;
-    const pdfId = tasks[idx].id;
+    if (!filteredTasks || !filteredTasks[idx]) return;
+    const pdfId = filteredTasks[idx].id;
     setPreviewLoading(true);
     setActionLoading((s) => ({ ...s, [pdfId]: true }));
     let blobUrl: string | null = null;
@@ -196,7 +229,7 @@ export default function QcDashboardInlinePreview() {
   }
 
   const viewPdfInline = (pdfId: string) => {
-    const idx = tasks.findIndex((t) => t.id === pdfId);
+    const idx = filteredTasks.findIndex((t) => t.id === pdfId);
     if (idx === -1) return;
     viewPdfInlineByIndex(idx);
   };
@@ -210,9 +243,9 @@ export default function QcDashboardInlinePreview() {
     setPreviewingId(null);
   };
 
-  const currentIndex = previewingId ? tasks.findIndex((t) => t.id === previewingId) : -1;
+  const currentIndex = previewingId ? filteredTasks.findIndex((t) => t.id === previewingId) : -1;
   const canPrev = currentIndex > 0;
-  const canNext = currentIndex >= 0 && currentIndex < tasks.length - 1;
+  const canNext = currentIndex >= 0 && currentIndex < filteredTasks.length - 1;
 
   const goPrev = () => {
     if (!canPrev) return;
@@ -239,13 +272,51 @@ export default function QcDashboardInlinePreview() {
     viewPdfInline(id);
   };
 
+  const toggleLanguageFilter = (lang: string) => {
+    setSelectedLanguages(prev => 
+      prev.includes(lang) 
+        ? prev.filter(l => l !== lang)
+        : [...prev, lang]
+    );
+  };
+
+  const clearAllFilters = () => {
+    setSelectedLanguages([]);
+    setSelectedStatus("all");
+  };
+
   const getStatusBadge = (item: any) => {
     if (item.status === "Accepted") return <span className="px-2.5 py-1 bg-emerald-500/10 text-emerald-600 text-xs font-medium rounded-full flex items-center gap-1.5"><CheckCircle size={12} /> Accepted</span>;
     if (item.status === "Rejected") return <span className="px-2.5 py-1 bg-red-500/10 text-red-600 text-xs font-medium rounded-full flex items-center gap-1.5"><XCircle size={12} /> Rejected</span>;
     return <span className="px-2.5 py-1 bg-gray-500/10 text-gray-600 text-xs font-medium rounded-full flex items-center gap-1.5"><Clock size={12} /> Pending</span>;
   };
 
-  const currentTask = previewingId ? tasks.find(t => t.id === previewingId) : null;
+  const getLanguageBadge = (lang: string) => {
+    if (!lang) return null;
+    const colors: Record<string, string> = {
+      "Japanese": "bg-purple-500/10 text-purple-600 border-purple-500/20",
+      "Hindi": "bg-orange-500/10 text-orange-600 border-orange-500/20",
+      "Russian": "bg-blue-500/10 text-blue-600 border-blue-500/20",
+      "Polish": "bg-pink-500/10 text-pink-600 border-pink-500/20",
+      "Arabic": "bg-green-500/10 text-green-600 border-green-500/20",
+      "German": "bg-yellow-500/10 text-yellow-600 border-yellow-500/20"
+    };
+    const colorClass = colors[lang] || "bg-gray-500/10 text-gray-600 border-gray-500/20";
+    return (
+      <span className={`px-2 py-0.5 ${colorClass} text-[10px] font-medium rounded-full border`}>
+        {lang}
+      </span>
+    );
+  };
+
+  const currentTask = previewingId ? filteredTasks.find(t => t.id === previewingId) : null;
+
+  // Get language counts for filter display
+  const languageCounts = tasks.reduce((acc, task) => {
+    const lang = task.language || "No Language";
+    acc[lang] = (acc[lang] || 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
 
   return (
     <div className="min-h-screen bg-white">
@@ -290,11 +361,14 @@ export default function QcDashboardInlinePreview() {
           )}
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Left: Task List */}
+            {/* Left: Task List with Filters */}
             <div className="col-span-1">
               <div className="backdrop-blur-md bg-black/5 border border-black/10 rounded-2xl p-5">
+                {/* Header with Refresh */}
                 <div className="flex justify-between items-center mb-4">
-                  <h2 className="text-sm font-bold text-black">Assigned Tasks</h2>
+                  <h2 className="text-sm font-bold text-black">
+                    Assigned Tasks ({filteredTasks.length})
+                  </h2>
                   <button 
                     onClick={fetchTasks}
                     className="flex items-center gap-1.5 text-xs text-black hover:text-gray-600 font-medium transition-colors"
@@ -304,19 +378,112 @@ export default function QcDashboardInlinePreview() {
                   </button>
                 </div>
 
-                <div className="space-y-3 max-h-[calc(100vh-250px)] overflow-auto">
+                {/* Filters Section */}
+                <div className="mb-4 space-y-3">
+                  {/* Status Filter */}
+                  <div>
+                    <label className="text-xs font-semibold text-black mb-2 block">Status</label>
+                    <div className="flex gap-2 flex-wrap">
+                      {["all", "pending", "accepted", "rejected"].map(status => (
+                        <button
+                          key={status}
+                          onClick={() => setSelectedStatus(status)}
+                          className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all ${
+                            selectedStatus === status
+                              ? "bg-black text-white"
+                              : "bg-white/50 border border-black/10 text-black hover:bg-white/80"
+                          }`}
+                        >
+                          {status.charAt(0).toUpperCase() + status.slice(1)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Language Filter */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="text-xs font-semibold text-black">Language</label>
+                      <button
+                        onClick={() => setShowLanguageFilter(!showLanguageFilter)}
+                        className="flex items-center gap-1 text-xs text-black hover:text-gray-600 font-medium transition-colors"
+                      >
+                        <Filter size={12} />
+                        {showLanguageFilter ? "Hide" : "Show"}
+                      </button>
+                    </div>
+                    
+                    {showLanguageFilter && (
+                      <div className="space-y-2">
+                        {PDF_LANGUAGES.map(lang => {
+                          const count = languageCounts[lang] || 0;
+                          if (count === 0) return null;
+                          return (
+                            <label
+                              key={lang}
+                              className="flex items-center gap-2 p-2 bg-white/50 rounded-lg hover:bg-white/80 cursor-pointer transition-all"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={selectedLanguages.includes(lang)}
+                                onChange={() => toggleLanguageFilter(lang)}
+                                className="w-4 h-4 rounded border-black/20"
+                              />
+                              <span className="text-xs text-black flex-1">{lang}</span>
+                              <span className="text-xs text-gray-500">({count})</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
+                    
+                    {selectedLanguages.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {selectedLanguages.map(lang => (
+                          <span
+                            key={lang}
+                            className="inline-flex items-center gap-1 px-2 py-1 bg-black text-white text-xs rounded-full"
+                          >
+                            {lang}
+                            <button
+                              onClick={() => toggleLanguageFilter(lang)}
+                              className="hover:bg-white/20 rounded-full p-0.5"
+                            >
+                              <X size={10} />
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Clear Filters */}
+                  {(selectedLanguages.length > 0 || selectedStatus !== "all") && (
+                    <button
+                      onClick={clearAllFilters}
+                      className="w-full px-3 py-2 bg-red-500/10 border border-red-500/20 text-red-600 rounded-xl text-xs font-medium hover:bg-red-500/20 transition-all"
+                    >
+                      Clear All Filters
+                    </button>
+                  )}
+                </div>
+
+                {/* Task List */}
+                <div className="space-y-3 max-h-[calc(100vh-450px)] overflow-auto">
                   {loading ? (
                     <div className="text-center py-8">
                       <RefreshCw size={24} className="animate-spin text-gray-400 mx-auto mb-2" />
                       <div className="text-xs text-gray-500">Loading tasks...</div>
                     </div>
-                  ) : tasks.length === 0 ? (
+                  ) : filteredTasks.length === 0 ? (
                     <div className="text-center py-8">
                       <FileText size={32} className="text-gray-300 mx-auto mb-2" />
-                      <div className="text-xs text-gray-500">No tasks assigned</div>
+                      <div className="text-xs text-gray-500">
+                        {tasks.length === 0 ? "No tasks assigned" : "No tasks match filters"}
+                      </div>
                     </div>
                   ) : (
-                    tasks.map((t) => (
+                    filteredTasks.map((t) => (
                       <div
                         key={t.id}
                         className={`backdrop-blur-md bg-white/50 border rounded-xl p-4 cursor-pointer transition-all hover:bg-white/80 ${
@@ -331,6 +498,11 @@ export default function QcDashboardInlinePreview() {
                             <div className="text-xs text-gray-500 mt-1">
                               by {t.uploaded_by}
                             </div>
+                            {t.language && (
+                              <div className="mt-1.5">
+                                {getLanguageBadge(t.language)}
+                              </div>
+                            )}
                           </div>
                         </div>
 
@@ -380,7 +552,12 @@ export default function QcDashboardInlinePreview() {
                 <div className="flex justify-between items-center p-5 border-b border-black/10">
                   <div className="flex items-center gap-3">
                     <h2 className="text-sm font-bold text-black">PDF Preview</h2>
-                    {currentTask && getStatusBadge(currentTask)}
+                    {currentTask && (
+                      <>
+                        {getStatusBadge(currentTask)}
+                        {currentTask.language && getLanguageBadge(currentTask.language)}
+                      </>
+                    )}
                   </div>
                   <button 
                     onClick={clearPreview}
@@ -420,6 +597,11 @@ export default function QcDashboardInlinePreview() {
                       <div className="mb-4">
                         <div className="text-xs font-semibold text-black mb-1">Current File</div>
                         <div className="text-xs text-gray-500 font-mono break-all">{previewingId}</div>
+                        {currentTask?.language && (
+                          <div className="mt-2">
+                            {getLanguageBadge(currentTask.language)}
+                          </div>
+                        )}
                       </div>
 
                       <div className="flex gap-2 mb-4">
@@ -505,8 +687,8 @@ export default function QcDashboardInlinePreview() {
 
       {/* Reject Modal */}
       {rejectModal.open && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-lg backdrop-blur-md bg-white border border-black/10 rounded-2xl shadow-2xl p-6">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <div className="w-full max-w-lg bg-white border border-black/10 rounded-2xl shadow-2xl p-6">
             <h3 className="text-lg font-bold text-black mb-2">Reject PDF</h3>
             <p className="text-sm text-gray-500 mb-4">
               Provide a reason for rejection. This will be saved with the PDF and visible to the uploader.

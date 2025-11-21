@@ -10,7 +10,6 @@ import {
   XCircle,
   Clock,
   AlertCircle,
-  Home,
   LogOut,
   AlertTriangle,
   Eye,
@@ -29,6 +28,8 @@ export default function UploadPdf() {
   const [message, setMessage] = useState<string | null>(null);
   const [result, setResult] = useState<any>(null);
 
+  const [language, setLanguage] = useState<string>(""); // selected language
+
   const [myPdfs, setMyPdfs] = useState<any[]>([]);
   const [loadingPdfs, setLoadingPdfs] = useState(false);
   const [actionLoading, setActionLoading] = useState<Record<string, boolean>>({});
@@ -37,6 +38,9 @@ export default function UploadPdf() {
   const [previewPdf, setPreviewPdf] = useState<any>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [loadingPreview, setLoadingPreview] = useState(false);
+
+  // Delete confirmation modal state
+  const [deleteConfirmPdf, setDeleteConfirmPdf] = useState<any>(null);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -91,6 +95,8 @@ export default function UploadPdf() {
     if (!fileToUpload || !authToken) return { ok: false, error: "No auth token or file" };
     const form = new FormData();
     form.append("pdf_file", fileToUpload);
+    form.append("language", language);
+
     try {
       const res = await fetch(`${API_URL}/api/upload-pdf`, {
         method: "POST",
@@ -121,6 +127,10 @@ export default function UploadPdf() {
       setMessage("❌ No auth token. Please login again.");
       return;
     }
+    if (!language) {
+      setMessage("⚠️ Please select a language before uploading.");
+      return;
+    }
 
     setUploading(true);
     setMessage(null);
@@ -129,7 +139,7 @@ export default function UploadPdf() {
     if (files.length === 1) {
       const f = files[0];
       const r = await uploadSingle(f);
-      if (r.status === 401) {
+      if ((r as any).status === 401) {
         setMessage("❌ Unauthorized. Please login again.");
         setTimeout(() => {
           logout();
@@ -161,7 +171,7 @@ export default function UploadPdf() {
       const f = files[i];
       setMessage(`Uploading ${i + 1}/${files.length}: ${f.name}`);
       const res = await uploadSingle(f);
-      if (res.status === 401) {
+      if ((res as any).status === 401) {
         setMessage("❌ Unauthorized. Please login again.");
         setTimeout(() => {
           logout();
@@ -182,10 +192,12 @@ export default function UploadPdf() {
     setMessage(`✅ ${successCount} uploaded, ❌ ${failCount} failed`);
     setResult({ multi: true, results });
     await fetchMyPdfs();
-    setFiles((prev) => prev.filter((f) => {
-      const resItem = results.find((r) => r.file === f.name);
-      return resItem ? !resItem.ok : true;
-    }));
+    setFiles((prev) =>
+      prev.filter((f) => {
+        const resItem = results.find((r) => r.file === f.name);
+        return resItem ? !resItem.ok : true;
+      })
+    );
     setUploading(false);
   };
 
@@ -389,6 +401,56 @@ export default function UploadPdf() {
     }
   }
 
+  // NEW: Delete uploaded PDF
+  async function deletePdf(pdfId: string) {
+    if (!authToken) {
+      setMessage("❌ No auth token available");
+      return;
+    }
+
+    const key = `delete-${pdfId}`;
+    setActionLoading((s) => ({ ...s, [key]: true }));
+
+    try {
+      const res = await fetch(`${API_URL}/api/my-pdfs/${pdfId}`, {
+        method: "DELETE",
+        headers: { "X-Auth-Token": authToken },
+      });
+
+      if (res.status === 401) {
+        setMessage("❌ Unauthorized. Please login again.");
+        logout();
+        navigate("/login");
+        return;
+      }
+
+      const data = await res.json().catch(() => ({} as any));
+
+      if (!res.ok) {
+        setMessage(`❌ Delete failed: ${data.error || res.statusText}`);
+        return;
+      }
+
+      setMessage("✅ PDF deleted successfully");
+      setMyPdfs((prev) => prev.filter((p) => p.id !== pdfId));
+
+      // If currently previewing this PDF, close preview
+      if (previewPdf && previewPdf.id === pdfId) {
+        closePreview();
+      }
+    } catch (err) {
+      console.error("deletePdf error:", err);
+      setMessage("❌ Delete failed (network error)");
+    } finally {
+      setActionLoading((s) => {
+        const copy = { ...s };
+        delete copy[key];
+        return copy;
+      });
+      setDeleteConfirmPdf(null);
+    }
+  }
+
   if (!isAuthenticated) return null;
 
   return (
@@ -407,13 +469,7 @@ export default function UploadPdf() {
               </div>
             </div>
             <div className="flex gap-2">
-              <button
-                onClick={() => navigate("/home")}
-                className="flex items-center gap-2 px-4 py-2 bg-white/50 border border-black/10 rounded-full text-sm font-medium text-black hover:bg-white/80 transition-all"
-              >
-                <Home size={14} />
-                Back
-              </button>
+              {/* Back button removed */}
               <button
                 onClick={async () => {
                   await logout();
@@ -450,6 +506,26 @@ export default function UploadPdf() {
 
             {/* Upload Form */}
             <form onSubmit={handleSubmit}>
+              {/* Language selector */}
+              <div className="mb-4 flex flex-wrap items-center gap-3">
+                <label className="text-sm font-semibold text-black">
+                  Language
+                </label>
+                <select
+                  value={language}
+                  onChange={(e) => setLanguage(e.target.value)}
+                  className="px-4 mx-4 py-2 border border-black/20 text-black rounded-full text-sm bg-white/70 focus:outline-none  focus:ring-black/40"
+                >
+                  <option value="">Select language</option>
+                  <option value="Japanese">Japanese</option>
+                  <option value="Hindi">Hindi</option>
+                  <option value="Russian">Russian</option>
+                  <option value="Polish">Polish</option>
+                  <option value="Arabic">Arabic</option>
+                  <option value="German">German</option>
+                </select>
+              </div>
+
               <div
                 onDrop={onDrop}
                 onDragOver={(e) => {
@@ -481,7 +557,10 @@ export default function UploadPdf() {
                 {files.length > 0 && (
                   <div className="mt-4 max-h-40 overflow-auto">
                     {files.map((f, idx) => (
-                      <div key={`${f.name}-${f.size}-${idx}`} className="flex items-center justify-between text-xs text-gray-700 bg-white/50 p-2 rounded-md mb-2">
+                      <div
+                        key={`${f.name}-${f.size}-${idx}`}
+                        className="flex items-center justify-between text-xs text-gray-700 bg-white/50 p-2 rounded-md mb-2"
+                      >
                         <div className="truncate mr-2">{f.name}</div>
                         <div className="flex items-center gap-2">
                           <div className="text-[11px] text-gray-500">{(f.size / 1024).toFixed(0)} KB</div>
@@ -567,6 +646,11 @@ export default function UploadPdf() {
                       <div className="font-semibold text-black">Uploaded successfully</div>
                     </div>
                     <div className="text-sm text-gray-600">File: {result.entry?.original_name}</div>
+                    {result.entry?.language && (
+                      <div className="text-sm text-gray-500 mt-1">
+                        Language: {result.entry.language}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -608,8 +692,8 @@ export default function UploadPdf() {
                         <div className="flex items-start gap-3">
                           <FileText size={16} className="text-gray-400 flex-shrink-0 mt-0.5" />
                           <div className="flex-1 min-w-0">
-                            <div 
-                              className="font-semibold text-black text-sm truncate" 
+                            <div
+                              className="font-semibold text-black text-sm truncate"
                               title={p.original_name}
                             >
                               {p.original_name}
@@ -624,6 +708,9 @@ export default function UploadPdf() {
                         <div className="text-xs text-gray-500 space-y-1 pl-7">
                           <div>Uploaded: {new Date(p.uploaded_at).toLocaleString()}</div>
                           <div>Size: {(p.size_bytes / 1024).toFixed(2)} KB</div>
+                          {p.language && (
+                            <div>Language: {p.language}</div>
+                          )}
                         </div>
 
                         {/* Feedback section */}
@@ -636,10 +723,10 @@ export default function UploadPdf() {
                         )}
 
                         {/* Action buttons */}
-                        <div className="flex gap-2 pl-7">
+                        <div className="flex gap-2 pl-7 flex-wrap">
                           <button
                             onClick={() => showPreview(p)}
-                            className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-black/10 rounded-full text-xs font-medium hover:bg-gray-50 transition-all whitespace-nowrap"
+                            className="flex items-center gap-1.5 px-3 py-1.5 bg.white bg-white border border-black/10 rounded-full text-xs font-medium hover:bg-gray-50 transition-all whitespace-nowrap text-black"
                           >
                             <Eye size={12} />
                             Preview
@@ -651,6 +738,15 @@ export default function UploadPdf() {
                           >
                             <Download size={12} />
                             {actionLoading[p.id] ? "Opening..." : "Open"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setDeleteConfirmPdf(p)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 bg-red-500/10 border border-red-500/20 text-red-600 rounded-full text-xs font-medium hover:bg-red-500/20 transition-all whitespace-nowrap"
+                            disabled={!!actionLoading[`delete-${p.id}`]}
+                          >
+                            <XCircle size={12} />
+                            {actionLoading[`delete-${p.id}`] ? "Deleting..." : "Delete"}
                           </button>
                         </div>
                       </div>
@@ -697,6 +793,11 @@ export default function UploadPdf() {
                     <div className="text-xs text-gray-500 mt-1">
                       {(previewPdf.size_bytes / 1024).toFixed(2)} KB
                     </div>
+                    {previewPdf.language && (
+                      <div className="text-xs text-gray-500 mt-0.5">
+                        Language: {previewPdf.language}
+                      </div>
+                    )}
                   </div>
                   <div className="flex-1 bg-white rounded-xl overflow-hidden border border-black/10">
                     <iframe
@@ -718,6 +819,51 @@ export default function UploadPdf() {
           </div>
         </div>
       </div>
+
+      {/* Delete Confirmation Modal */}
+      {deleteConfirmPdf && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 border border-black/10">
+            <div className="flex items-start gap-4 mb-4">
+              <div className="w-12 h-12 rounded-full bg-red-500/10 flex items-center justify-center flex-shrink-0">
+                <AlertTriangle size={24} className="text-red-600" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-black mb-1">Delete PDF</h3>
+                <p className="text-sm text-gray-600">
+                  Are you sure you want to delete this file? This action cannot be undone.
+                </p>
+              </div>
+            </div>
+
+            <div className="mb-6 p-3 bg-black/5 rounded-xl">
+              <div className="text-sm font-semibold text-black truncate" title={deleteConfirmPdf.original_name}>
+                {deleteConfirmPdf.original_name}
+              </div>
+              <div className="text-xs text-gray-500 mt-1">
+                {(deleteConfirmPdf.size_bytes / 1024).toFixed(2)} KB
+              </div>
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => setDeleteConfirmPdf(null)}
+                className="flex-1 px-4 py-2.5 bg-white border border-black/10 rounded-full text-sm font-semibold text-black hover:bg-gray-50 transition-all"
+                disabled={!!actionLoading[`delete-${deleteConfirmPdf.id}`]}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => deletePdf(deleteConfirmPdf.id)}
+                className="flex-1 px-4 py-2.5 bg-red-600 text-white rounded-full text-sm font-semibold hover:bg-red-700 transition-all disabled:bg-red-300 disabled:cursor-not-allowed"
+                disabled={!!actionLoading[`delete-${deleteConfirmPdf.id}`]}
+              >
+                {actionLoading[`delete-${deleteConfirmPdf.id}`] ? "Deleting..." : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

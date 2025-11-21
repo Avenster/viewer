@@ -9,51 +9,42 @@
     "upload_sessions": [],
     "global_uploads": [
       {
-        "id": "2a9f753badd94720b0b3d6aa5fbaf012",
-        "original_name": "ESG_Report_2022_AR.pdf",
-        "uploaded_at": "2025-11-19T13:11:09.263919"
-      },
-      {
-        "id": "4d998c6cf42b4ab184ba1eca812d92f4",
+        "id": "cb4a055924f14c38a3aac3833ad3f178",
         "original_name": "PELNOMOCNICTWO_v20220318.pdf",
-        "uploaded_at": "2025-11-19T17:17:02.350147"
+        "uploaded_at": "2025-11-21T12:23:06.403297"
       },
       {
-        "id": "7ca0065fe4864ab593ac8bae66cb974f",
+        "id": "91fccffac56a4bb1b51e6d333cd1aff3",
         "original_name": "WNIOSEK_O_CZASOWE_WYCOFANIE_POJAZDU_Z_RUCHU_v20220904.pdf",
-        "uploaded_at": "2025-11-20T13:11:20.331113"
+        "uploaded_at": "2025-11-21T12:23:06.420586"
       },
       {
-        "id": "40300d8999754c9896b7e4eab5f1c6dd",
-        "original_name": "WNIOSEK_OGOLNY_v20240102.pdf",
-        "uploaded_at": "2025-11-20T13:11:20.342153"
-      },
-      {
-        "id": "2a137184d5214720bc0edc884b363ddb",
-        "original_name": "WNIOSEK_O_WYDANIE_DODATKOWEJ_TABLICY_REJESTRACYJNEJ_v20241130.pdf",
-        "uploaded_at": "2025-11-20T13:11:31.509491"
-      },
-      {
-        "id": "71f8165036434f9489bc9edd18755db7",
-        "original_name": "WNIOSEK_O_REJESTRACJE_POJAZDU_v20241130.pdf",
-        "uploaded_at": "2025-11-20T13:11:31.538504"
-      },
-      {
-        "id": "fcb03530101f4cd0965e05c61e283348",
+        "id": "62e25862b8284aecb6117762f3154aec",
         "original_name": "WNIOSEK_O_WYDANIE_WTORNIKA_LUB_NOWEGO_DOWODU_REJESTRACYJNEGO_v20241130.pdf",
-        "uploaded_at": "2025-11-20T13:11:31.550927"
+        "uploaded_at": "2025-11-21T12:23:06.428921"
       },
       {
-        "id": "ecb043576ac9456e9f96db015ced77cc",
-        "original_name": "WNIOSEK_O_NADANIE_CECH_LUB_WYKONANIE_TABLICZKI_v20220904.pdf",
-        "uploaded_at": "2025-11-20T13:11:50.587743"
+        "id": "5b8b25f472d647d58f8c1ff15ede330a",
+        "original_name": "WNIOSEK_OGOLNY_v20240102.pdf",
+        "uploaded_at": "2025-11-21T12:23:06.437460"
+      },
+      {
+        "id": "274ee8ad21774fbf9f7f6d25799c97df",
+        "original_name": "WNIOSEK_O_WYDANIE_DODATKOWEJ_TABLICY_REJESTRACYJNEJ_v20241130.pdf",
+        "uploaded_at": "2025-11-21T12:57:29.165280"
+      },
+      {
+        "id": "4ba86daaa9434552b24b5885e45d9336",
+        "original_name": "WNIOSEK_O_REJESTRACJE_POJAZDU_v20241130.pdf",
+        "uploaded_at": "2025-11-21T13:08:43.826951"
       }
     ],
-    "last_login": "2025-11-20T13:05:13.273887",
+    "last_login": "2025-11-21T11:58:16.350572",
     "auth_tokens": {
       "3d089bcca83b449d82ff4bae3bb288c0": "2025-12-19T17:00:39.861781",
       "f6ee6dc466a748f486aa198245890184": "2025-12-19T17:31:01.616414",
-      "f5fd3c402784477a80f1e55456aef425": "2025-12-20T13:05:13.273856"
+      "f5fd3c402784477a80f1e55456aef425": "2025-12-20T13:05:13.273856",
+      "bf99c614a5604de4aff66cafc65bd8e7": "2025-12-21T11:58:16.350556"
     }
   },
   "1aca8e8c13c34d14834030096b83a51d": {
@@ -76,7 +67,7 @@
     "role": "admin",
     "password_hash": "240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9",
     "created_at": "2025-11-19T16:27:50.218595",
-    "last_login": "2025-11-20T13:02:21.277071",
+    "last_login": "2025-11-21T12:28:48.221602",
     "auth_tokens": {
       "27dc47ee87374eb392943e413438c300": "2025-12-19T16:33:12.098912",
       "74b1fa3e0d9c4f86842b0bde51fe8ff5": "2025-12-19T16:50:51.924907",
@@ -87,7 +78,8 @@
       "4694b25b90d345359ad670200e55c90a": "2025-12-20T12:16:57.268912",
       "e41171a8c8d048a48558a403464caf34": "2025-12-20T12:47:03.677494",
       "3b67b18555d54be5b90c1a3fe202fd3f": "2025-12-20T12:50:00.618172",
-      "6d327e8c19694ab5966181cef6fb4828": "2025-12-20T13:02:21.277042"
+      "6d327e8c19694ab5966181cef6fb4828": "2025-12-20T13:02:21.277042",
+      "906084074c2c463db7af4d35e22a9e3c": "2025-12-21T12:28:48.221574"
     }
   },
   "470e921b45794e93ab3dba26a39782e6": {
